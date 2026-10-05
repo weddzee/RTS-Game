@@ -1,10 +1,10 @@
-import colorblindTheme from "./colorblind-theme.json";
+﻿import colorblindTheme from "./colorblind-theme.json";
 import defaultTheme from "./default-theme.json";
 import { PALETTE_NAMES } from "./GraphicsOverrides";
 import defaults from "./render-settings.json";
 
 /**
- * Theme data — player/team palettes and color-derivation knobs. Loaded from a
+ * Theme data â€” player/team palettes and color-derivation knobs. Loaded from a
  * theme JSON file (default-theme.json or colorblind-theme.json) and combined
  * with render-settings.json at runtime so all graphics configuration flows
  * through one pipeline. Colors are hex strings; palettes are consumed by the
@@ -62,10 +62,11 @@ export interface RenderSettings {
     fx: boolean;
     bar: boolean;
     nameDebug: boolean;
+    armyMarker: boolean;
   };
   terrain: {
     /**
-     * Map background color as a "#rrggbb" hex string — the clear color drawn
+     * Map background color as a "#rrggbb" hex string â€” the clear color drawn
      * outside the map quad. Impassable terrain is baked to the same color so
      * the map keeps its non-rectangular silhouette.
      */
@@ -162,7 +163,7 @@ export interface RenderSettings {
     friendlyTintG: number;
     friendlyTintB: number;
   };
-  /** Alt-view affiliation colors (0–1 RGB). */
+  /** Alt-view affiliation colors (0â€“1 RGB). */
   affiliation: {
     selfR: number;
     selfG: number;
@@ -194,7 +195,7 @@ export interface RenderSettings {
     /**
      * Zoom level at which structures begin growing with the canvas.
      * Below this zoom, structures stay at a fixed screen size (capped).
-     * Above this zoom, they grow proportionally to zoom — i.e. world-anchored,
+     * Above this zoom, they grow proportionally to zoom â€” i.e. world-anchored,
      * so they cover a fixed area of the map.
      */
     iconGrowZoom: number;
@@ -302,14 +303,14 @@ export interface RenderSettings {
   };
   fx: {
     shockwaveRingWidth: number;
-    attackRingScreenPx: number; // screen px — attack ring quad half-size (visible outer ring = 0.8×)
+    attackRingScreenPx: number; // screen px â€” attack ring quad half-size (visible outer ring = 0.8Ă—)
     nukeShockwaveDurationMs: number;
     nukeShockwaveRadiusFactor: number;
     samShockwaveDurationMs: number;
     samShockwaveRadius: number;
     debrisLifetimeMs: number;
-    debrisFadeIn: number; // 0–1 fraction of lifetime
-    debrisFadeOut: number; // 0–1 fraction of lifetime (start of fade)
+    debrisFadeIn: number; // 0â€“1 fraction of lifetime
+    debrisFadeOut: number; // 0â€“1 fraction of lifetime (start of fade)
     conquestLifetimeMs: number;
     conquestFadeIn: number;
     conquestFadeOut: number;
@@ -321,12 +322,12 @@ export interface RenderSettings {
     debrisDensity: number;
   };
   nukeTrajectory: {
-    lineWidth: number; // px — main line stroke width
-    outlineWidth: number; // px — extra width for outline behind line
-    dashTargetable: number; // px — dash length in targetable zone
-    gapTargetable: number; // px — gap length in targetable zone
-    dashUntargetable: number; // px — dash length in untargetable zone
-    gapUntargetable: number; // px — gap length in untargetable zone
+    lineWidth: number; // px â€” main line stroke width
+    outlineWidth: number; // px â€” extra width for outline behind line
+    dashTargetable: number; // px â€” dash length in targetable zone
+    gapTargetable: number; // px â€” gap length in targetable zone
+    dashUntargetable: number; // px â€” dash length in untargetable zone
+    gapUntargetable: number; // px â€” gap length in untargetable zone
     lineR: number; // normal line color
     lineG: number;
     lineB: number;
@@ -339,41 +340,74 @@ export interface RenderSettings {
     interceptOutlineR: number; // outline color (after intercept)
     interceptOutlineG: number;
     interceptOutlineB: number;
-    markerCircleRadius: number; // px — zone boundary circle size
-    markerXRadius: number; // px — SAM intercept X size
+    markerCircleRadius: number; // px â€” zone boundary circle size
+    markerXRadius: number; // px â€” SAM intercept X size
   };
   nukeTelegraph: {
-    strokeWidth: number; // world units — circle ring width
-    dashLen: number; // world units — outer ring dash length
-    gapLen: number; // world units — outer ring gap length
+    strokeWidth: number; // world units â€” circle ring width
+    dashLen: number; // world units â€” outer ring dash length
+    gapLen: number; // world units â€” outer ring gap length
     rotationSpeed: number; // outer ring rotation speed
-    baseAlpha: number; // base opacity (0–1)
-    pulseAmplitude: number; // alpha pulse ±
+    baseAlpha: number; // base opacity (0â€“1)
+    pulseAmplitude: number; // alpha pulse Â±
     pulseSpeed: number; // pulse frequency (radians/sec)
     fillAlphaOffset: number; // inner fill is baseAlpha minus this
-    colorR: number; // circle color — enemy nukes
+    colorR: number; // circle color â€” enemy nukes
     colorG: number;
     colorB: number;
-    selfColorR: number; // circle color — own nukes
+    selfColorR: number; // circle color â€” own nukes
     selfColorG: number;
     selfColorB: number;
-    allyColorR: number; // circle color — ally/teammate nukes
+    allyColorR: number; // circle color â€” ally/teammate nukes
     allyColorG: number;
     allyColorB: number;
   };
-  moveIndicator: {
+moveIndicator: {
     startRadius: number; // screen px — initial distance from center
     chevronSize: number; // screen px — wing span
     lineWidth: number; // screen px — stroke width
     duration: number; // ms — total animation lifetime
     converge: number; // 0–1 — fraction of radius consumed during animation
   };
+  /**
+   * Drawn battle plans: frontlines and offensive arrows (Prompt 4.3).
+   *
+   * Sizes are device pixels because a plan is a piece of UI drawn on the map:
+   * it should read the same whether the player is zoomed all the way out
+   * watching the whole front or zoomed in on one arrowhead.
+   */
+  battlePlan: {
+    enabled: boolean;
+    /** Ribbon half-width, device px. The core is a fixed fraction of this. */
+    halfWidthPx: number;
+    /** Dash + gap period for arrow and fallback strokes, device px. */
+    dashPeriodPx: number;
+    /** Fraction of the dash period that is drawn. */
+    dashDuty: number;
+    /** Dash phase speed, device px per second. */
+    dashSpeedPx: number;
+    /** Tooth pitch along a frontline, world units (tiles). */
+    toothPeriodTiles: number;
+    /** Arrow head length and half-span, device px. */
+    headLengthPx: number;
+    headHalfWidthPx: number;
+    /** Base opacity of a plan, 0–1. Partially transparent so the map reads. */
+    alpha: number;
+    /** Opacity of the plan under the pointer or selected, 0–1. */
+    activeAlpha: number;
+    /** Outline drawn around every ribbon and head, rgb 0–1. */
+    outlineColor: [number, number, number];
+    /** Tint for the illegal part of an in-progress gesture, rgb 0–1. */
+    invalidColor: [number, number, number];
+    /** How strongly an illegal section is tinted, 0–1. */
+    invalidMix: number;
+  };
   samRadius: {
     strokeWidth: number; // ring half-width in world units
     dashLen: number; // dash length in world units
     gapLen: number; // gap length in world units
     rotationSpeed: number; // world units per second
-    alpha: number; // base opacity (0–1)
+    alpha: number; // base opacity (0â€“1)
     outlineWidth: number; // outline border width in world units
     outlineSoftness: number; // smoothstep range (0 = hard, higher = softer)
   };
@@ -395,18 +429,30 @@ export interface RenderSettings {
   };
   spawnOverlay: {
     highlightRadius: number; // tile highlight radius (squared internally)
-    highlightAlpha: number; // tile highlight opacity (0–1)
+    highlightAlpha: number; // tile highlight opacity (0â€“1)
     selfMinRad: number; // self ring inner radius
     selfMaxRad: number; // self ring outer radius
     mateMinRad: number; // teammate ring inner radius
     mateMaxRad: number; // teammate ring outer radius
     animSpeed: number; // breathing animation speed
-    gradientInnerEdge: number; // static gradient inner ramp end (0–1)
-    gradientSolidEnd: number; // static gradient solid band end (0–1)
+    gradientInnerEdge: number; // static gradient inner ramp end (0â€“1)
+    gradientSolidEnd: number; // static gradient solid band end (0â€“1)
+  };
+  armyMarker: {
+    /** Device px per tile at or above which the marker draws its detail ring. */
+    nearZoom: number;
+    /** Marker radius in tiles for a recruit-strength army. */
+    baseRadius: number;
+    /** Extra radius a max-strength army gets over baseRadius. */
+    maxRadiusBonus: number;
+    /** Radians between friendly armies sharing a tile, per extra army. */
+    stackSpread: number;
+    /** Tiles the fan-out pushes the last army of a stack out by. */
+    stackSpreadMax: number;
   };
   smallPlayerGlow: {
-    color: number[]; // RGB, each 0–1
-    alpha: number; // peak opacity (0–1)
+    color: number[]; // RGB, each 0â€“1
+    alpha: number; // peak opacity (0â€“1)
     pulseSpeed: number; // breath animation speed
     strength: number; // opacity fade: 0 = off, 1 = full brightness (default 0.35)
   };
@@ -419,7 +465,7 @@ export interface RenderSettings {
   tileDrip: {
     /**
      * Round-robin bucket count for staggering territory tile uploads across
-     * render frames. One bucket drains per frame at 60Hz. 12 ≈ 200ms max
+     * render frames. One bucket drains per frame at 60Hz. 12 â‰ 200ms max
      * latency, which absorbs a 100ms tick delay without a visible freeze.
      * Changing at runtime requires reload.
      */

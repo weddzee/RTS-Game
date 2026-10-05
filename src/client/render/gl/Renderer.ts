@@ -1,12 +1,12 @@
 /**
- * GPURenderer v2 — normalized render pipeline.
+ * GPURenderer v2 â€” normalized render pipeline.
  *
  * Draw order:
- *   DATA SYNC: tile flush → heat update → border compute
- *   BASE PASS (darkened by night): terrain → territory fill + stale-nuke ground
- *   NIGHT COMPOSITE (optional): lightmap → scene × (ambient + lightmap)
- *   FULL BRIGHTNESS (always): borders → railroads → ground units → structures →
- *     structure levels → bars → bloom → trails → missiles → fx → conquest → names
+ *   DATA SYNC: tile flush â†’ heat update â†’ border compute
+ *   BASE PASS (darkened by night): terrain â†’ territory fill + stale-nuke ground
+ *   NIGHT COMPOSITE (optional): lightmap â†’ scene Ă— (ambient + lightmap)
+ *   FULL BRIGHTNESS (always): borders â†’ railroads â†’ ground units â†’ structures â†’
+ *     structure levels â†’ bars â†’ bloom â†’ trails â†’ missiles â†’ fx â†’ conquest â†’ names
  */
 
 import type { Config } from "../../../core/configuration/Config";
@@ -29,8 +29,11 @@ import type {
   TerrainRect,
   UnitState,
 } from "../types";
+import type { ArmyMarker } from "../types/ArmyMarker";
+import type { BattlePlanStroke } from "../types/BattlePlan";
 import { Camera } from "./Camera";
 import { GLUnavailableError, initGL } from "./initGL";
+import { ArmyMarkerPass } from "./passes/ArmyMarkerPass";
 import { BarPass } from "./passes/BarPass";
 import { BorderComputePass } from "./passes/BorderComputePass";
 import { BorderStampPass } from "./passes/BorderStampPass";
@@ -42,6 +45,7 @@ import { FalloutLightPass } from "./passes/FalloutLightPass";
 import { FxPass } from "./passes/fx-pass";
 import { LightmapPass } from "./passes/LightmapPass";
 import { MapLayerPass } from "./passes/MapLayerPass";
+import { BattlePlanPass } from "./passes/BattlePlanPass";
 import { MoveIndicatorPass } from "./passes/MoveIndicatorPass";
 import { NamePass } from "./passes/name-pass";
 import { NightCompositePass } from "./passes/NightCompositePass";
@@ -95,7 +99,7 @@ const SAM_RADIUS_GHOST_TYPES = new Set([
   "Hydrogen Bomb",
 ]);
 
-/** Subset for build-button hover — excludes City/Silo (SAM radii irrelevant). */
+/** Subset for build-button hover â€” excludes City/Silo (SAM radii irrelevant). */
 const SAM_RADIUS_HIGHLIGHT_TYPES = new Set([
   "SAM Launcher",
   "Atom Bomb",
@@ -112,7 +116,7 @@ export class GPURenderer {
   /**
    * Set when the context is hardware-accelerated but its MAX_TEXTURE_SIZE is
    * below what the game needs (fingerprinting protection, #4357). The game
-   * runs, but the map may render with black areas — the owner should warn.
+   * runs, but the map may render with black areas â€” the owner should warn.
    */
   readonly glLimited: { renderer: string; maxTextureSize: number } | null;
 
@@ -142,6 +146,7 @@ export class GPURenderer {
   private worldTextPass: WorldTextPass;
   private selectionBoxPass: SelectionBoxPass;
   private moveIndicatorPass: MoveIndicatorPass;
+  private battlePlanPass: BattlePlanPass;
   private nukeTrajectoryPass: NukeTrajectoryPass;
   private nukeTelegraphPass: NukeTelegraphPass;
   private heatManager: HeatManager;
@@ -149,6 +154,8 @@ export class GPURenderer {
   private coordinateGridPass: CoordinateGridPass;
   private spawnOverlayPass: SpawnOverlayPass;
   private smallPlayerGlowPass: SmallPlayerGlowPass;
+  /** Army markers (Prompt 3). Own pass: drawn above units, below text. */
+  private armyMarkerPass: ArmyMarkerPass;
   private inSpawnPhase = false;
 
   // Map-layer passes keyed by layer id, drawn between terrain and territory.
@@ -163,7 +170,7 @@ export class GPURenderer {
   private paletteTex: WebGLTexture;
   private paletteData: Float32Array;
   // Per-player trail-effect palette, keyed by smallID (RGBA32F,
-  // 4096×(MAX_TRAIL_COLORS·TRAIL_EFFECT_BLOCKS)): one MAX_TRAIL_COLORS-row block
+  // 4096Ă—(MAX_TRAIL_COLORSÂ·TRAIL_EFFECT_BLOCKS)): one MAX_TRAIL_COLORS-row block
   // per trail effectType (block 0 = transportShipTrail, block 1 = nukeTrail).
   // Sampled by TrailPass; the shader picks the block from the trail tile's nuke
   // bit.
@@ -194,7 +201,7 @@ export class GPURenderer {
 
   // Local player relationship data (for SAM radius coloring)
   private localPlayerID = 0;
-  private playerTeams = new Map<number, string>(); // smallID → team
+  private playerTeams = new Map<number, string>(); // smallID â†’ team
 
   // Alt-view: affiliation recoloring (space hold)
   private altView = false;
@@ -205,7 +212,7 @@ export class GPURenderer {
   private samGhostVisible = false;
   private samHighlightVisible = false;
 
-  // Warship selection — supports any number of selections.
+  // Warship selection â€” supports any number of selections.
   private selectedUnitIds: number[] = [];
   /** Reusable scratch buffer of {x,y,r,g,b} for the selection-box pass. */
   private readonly selectionBoxEntries: import("./passes/SelectionBoxPass").SelectionEntry[] =
@@ -223,7 +230,7 @@ export class GPURenderer {
   ) {
     this.canvas = canvas;
     // Settings are resolved (defaults + user overrides) by the caller and
-    // passed in, so every pass — including texture-baking ones like terrain —
+    // passed in, so every pass â€” including texture-baking ones like terrain â€”
     // is built with the final values. Live changes mutate this object in place.
     this.settings = settings;
     this.raf = raf;
@@ -232,7 +239,7 @@ export class GPURenderer {
     // Demand a GPU-accelerated context. A software (SwiftShader) or missing
     // WebGL2 context throws GLUnavailableError, which the game-start path
     // turns into an actionable gate instead of letting the game crawl at
-    // ~1fps. A fingerprint-capped context ("limited" — MAX_TEXTURE_SIZE below
+    // ~1fps. A fingerprint-capped context ("limited" â€” MAX_TEXTURE_SIZE below
     // the palette width, #4357) proceeds anyway; glLimited lets the owner
     // warn the player that the map may render with black areas.
     const res = initGL(canvas, {
@@ -253,7 +260,7 @@ export class GPURenderer {
 
     const floatExt = gl.getExtension("EXT_color_buffer_float");
     if (!floatExt)
-      console.warn("EXT_color_buffer_float not available — palette may fail");
+      console.warn("EXT_color_buffer_float not available â€” palette may fail");
 
     const mapW = header.mapWidth;
     const mapH = header.mapHeight;
@@ -263,7 +270,7 @@ export class GPURenderer {
     this.camera = new Camera(mapW, mapH);
 
     // --- Terrain (static) ---
-    // Bake once and let the array go — nothing below retains map-sized
+    // Bake once and let the array go â€” nothing below retains map-sized
     // terrain bytes; re-bakes call terrainSource again.
     const terrainBytes = terrainSource();
     this.terrainPass = new TerrainPass(
@@ -296,7 +303,7 @@ export class GPURenderer {
       filter: gl.NEAREST,
     });
 
-    // --- Shared palette texture (RGBA32F, 4096×2) ---
+    // --- Shared palette texture (RGBA32F, 4096Ă—2) ---
     this.paletteData = paletteData;
     const palW = getPaletteSize();
     this.paletteTex = createTexture2D(gl, {
@@ -312,7 +319,7 @@ export class GPURenderer {
     // Per-player effect texture: EFFECT_PALETTE_BLOCKS stacked blocks of
     // MAX_TRAIL_COLORS rows (block 0 = transportShipTrail, block 1 = nukeTrail,
     // block 2 = structures, block 3 = warship, block 4 = train, block 5 =
-    // railroad). Starts zeroed (color count 0 everywhere = no effect →
+    // railroad). Starts zeroed (color count 0 everywhere = no effect â†’
     // territory/player color).
     const effectRows = MAX_TRAIL_COLORS * EFFECT_PALETTE_BLOCKS;
     this.effectTex = createTexture2D(gl, {
@@ -356,8 +363,8 @@ export class GPURenderer {
       data: this.skinLayerCpu,
       filter: gl.NEAREST,
     });
-    // Per-player skin anchor: RG16UI, 2× uint16 per player → 4 bytes each.
-    // (0,0) sentinel means "no anchor" — shader uses world origin.
+    // Per-player skin anchor: RG16UI, 2Ă— uint16 per player â†’ 4 bytes each.
+    // (0,0) sentinel means "no anchor" â€” shader uses world origin.
     this.skinAnchorCpu = new Uint16Array(palW * 2);
     this.skinAnchorTex = createTexture2D(gl, {
       width: palW,
@@ -368,24 +375,24 @@ export class GPURenderer {
       data: this.skinAnchorCpu,
       filter: gl.NEAREST,
     });
-    // Construct with no URLs — the real atlas is built once initSkinAtlas() is
+    // Construct with no URLs â€” the real atlas is built once initSkinAtlas() is
     // called with the locked-in player skin URLs at game start.
     this.skinAtlas = new SkinAtlasArray(gl, [], () => {});
 
     // --- Border compute (creates its own borderTex) ---
-    // Need a temporary tileTex reference for border compute — we'll create
+    // Need a temporary tileTex reference for border compute â€” we'll create
     // GPUResources first, then wire everything.
     // But borderPass creates its own borderTex internally, so we need to
     // create GPUResources with it. Let's sequence carefully:
 
     // 1. Create GPUResources (creates tileTex, trailTex, heatTexA/B)
-    //    borderTex placeholder — we'll get it from borderPass
+    //    borderTex placeholder â€” we'll get it from borderPass
     //    First create a dummy, then replace after borderPass is created.
 
     // Actually: borderPass creates its own internal borderTex (RGBA8).
     // We need tileTex to exist before borderPass. So:
     //   a) Create shared resources (tileTex, trailTex, heatA/B)
-    //   b) Create borderPass with tileTex → gives us borderTex
+    //   b) Create borderPass with tileTex â†’ gives us borderTex
     //   c) Store borderTex in res
 
     // Create shared textures except borderTex
@@ -401,7 +408,7 @@ export class GPURenderer {
     );
     this.res.borderTex = this.borderPass.getBorderTex();
 
-    // --- Defense coverage (needs tileTex) — per-tile "defended by same-owner
+    // --- Defense coverage (needs tileTex) â€” per-tile "defended by same-owner
     // post" flag, stamped one instanced circle per post. Replaces the old
     // 64-cap uniform loop; consumed by BorderStampPass. ---
     this.defenseCoveragePass = new DefenseCoveragePass(
@@ -440,7 +447,7 @@ export class GPURenderer {
     // Route per-tile changes to the border pass so it can scatter-recompute
     // just the affected tiles instead of rebuilding the whole map. A tile
     // changing owner can also flip its defense-coverage flag (same-owner test),
-    // so mark the coverage stale too — one coalesced re-stamp happens per frame.
+    // so mark the coverage stale too â€” one coalesced re-stamp happens per frame.
     this.territoryPass.setBorderPatchConsumer((x, y, prevOwner, newOwner) => {
       this.borderPass.patchTile(x, y, prevOwner, newOwner);
       this.defenseCoveragePass.markTileDirty(x, y);
@@ -592,8 +599,10 @@ export class GPURenderer {
     this.worldTextPass.setMapWidth(this.mapW);
     this.selectionBoxPass = new SelectionBoxPass(gl);
     this.moveIndicatorPass = new MoveIndicatorPass(gl, this.settings);
+    this.battlePlanPass = new BattlePlanPass(gl, this.settings);
     this.nukeTrajectoryPass = new NukeTrajectoryPass(gl, this.settings);
     this.nukeTelegraphPass = new NukeTelegraphPass(gl, this.settings);
+    this.armyMarkerPass = new ArmyMarkerPass(gl, this.settings.armyMarker);
 
     // --- Scene capture target (for night composite) ---
     const sceneTex = gl.createTexture()!;
@@ -684,6 +693,15 @@ export class GPURenderer {
 
   setCameraState(x: number, y: number, z: number): void {
     this.camera.setCameraState(x, y, z);
+  }
+
+  /**
+   * Current device px per world tile. Consumers that build data per tick need it
+   * for level-of-detail decisions (the army markers switch to their detail form
+   * at close zoom), and the renderer's own passes get it in draw().
+   */
+  cameraZoom(): number {
+    return this.camera.zoom;
   }
 
   // ---------------------------------------------------------------------------
@@ -777,7 +795,7 @@ export class GPURenderer {
     }
     // Renderer was constructed with players: [] (real list arrives via this
     // method), so team mode must be re-evaluated whenever new players arrive
-    // — otherwise team games never enable the skin-tint branch.
+    // â€” otherwise team games never enable the skin-tint branch.
     this.territoryPass.setTeamMode(this.playerTeams.size > 0);
   }
 
@@ -860,7 +878,7 @@ export class GPURenderer {
    *
    * Layers are zero-initialized (browsers do this for security regardless of
    * the GL spec's "undefined" wording), so players whose images haven't
-   * decoded yet render with alpha=0 → falls through to base player color.
+   * decoded yet render with alpha=0 â†’ falls through to base player color.
    */
   initSkinAtlas(urls: readonly string[]): void {
     this.skinAtlas.dispose();
@@ -978,10 +996,10 @@ export class GPURenderer {
 
   /**
    * Update terrain texels for regions whose terrain bytes changed (e.g. water
-   * nukes converting land → water). Each rect's bytes are stored row-major,
+   * nukes converting land â†’ water). Each rect's bytes are stored row-major,
    * concatenated in `bytes` in rect order. Forwards to both TerrainPass (RGBA
    * color) and RailroadPass (R8UI water-detection for bridges). One
-   * texSubImage2D per rect — per-tile uploads cost hundreds of ms for a
+   * texSubImage2D per rect â€” per-tile uploads cost hundreds of ms for a
    * massive bomb.
    */
   applyTerrainRects(rects: readonly TerrainRect[], bytes: Uint8Array): void {
@@ -1041,6 +1059,13 @@ export class GPURenderer {
     this.worldTextPass.setAttackTroopLabels(labels);
   }
 
+  /** Army name/strength labels (Prompt 3.6). See WorldTextPass.setArmyLabels. */
+  setArmyLabels(
+    labels: import("./passes/WorldTextPass").AttackTroopLabel[],
+  ): void {
+    this.worldTextPass.setArmyLabels(labels);
+  }
+
   applyBonusEvents(events: BonusEvent[]): void {
     if (events.length === 0) return;
     // In live game, filter to local player only. In replay (localPlayerID=0), show all.
@@ -1065,7 +1090,7 @@ export class GPURenderer {
     this.rangeCirclePass.updateGhostPreview(data);
     this.crosshairPass.updateGhostPreview(data);
     // The multiplier badge (x5) rides on the cost label but must show even
-    // when there is no cost line — e.g. infinite gold (cost 0) or the
+    // when there is no cost line â€” e.g. infinite gold (cost 0) or the
     // cursor-cost-label setting turned off.
     const topText =
       data?.multiplier && data.multiplier > 1
@@ -1104,6 +1129,28 @@ export class GPURenderer {
   updateSpawnOverlay(inSpawnPhase: boolean, centers: SpawnCenter[]): void {
     this.inSpawnPhase = inSpawnPhase;
     this.spawnOverlayPass.update(centers);
+  }
+
+  /** Replace the army markers. See ArmyMarkerPass.update. */
+  updateArmyMarkers(markers: ArmyMarker[]): void {
+    this.armyMarkerPass.update(markers);
+  }
+
+  /** Replace the drawn battle plans. See BattlePlanPass.setStrokes. */
+  updateBattlePlanStrokes(strokes: BattlePlanStroke[]): void {
+    this.battlePlanPass.setStrokes(strokes);
+  }
+
+  /**
+   * The two opacities a caller needs to build a stroke: resting and active.
+   *
+   * Exposed so the controller building strokes does not have to know about render
+   * settings internals, and so both numbers keep coming from the same place the
+   * pass reads them.
+   */
+  battlePlanAlphas(): { alpha: number; activeAlpha: number } {
+    const s = this.settings.battlePlan;
+    return { alpha: s.alpha, activeAlpha: s.activeAlpha };
   }
 
   updateSmallPlayerGlow(set: Uint8Array | null): void {
@@ -1189,7 +1236,7 @@ export class GPURenderer {
       this.selectionBoxPass.hide();
     }
     // Position + color are rebuilt each frame in updateSelectionBox() from
-    // lastUnits — dead units get dropped automatically.
+    // lastUnits â€” dead units get dropped automatically.
   }
 
   private updateSelectionBox(): void {
@@ -1202,7 +1249,7 @@ export class GPURenderer {
     for (let i = 0; i < this.selectedUnitIds.length; i++) {
       const id = this.selectedUnitIds[i];
       const unit = this.lastUnits.get(id);
-      if (!unit || !unit.isActive) continue; // dead — drop
+      if (!unit || !unit.isActive) continue; // dead â€” drop
       this.selectedUnitIds[writeIdx++] = id;
 
       const centerX = unit.pos % this.mapW;
@@ -1250,7 +1297,7 @@ export class GPURenderer {
   }
 
   // ---------------------------------------------------------------------------
-  // Render — normalized draw order
+  // Render â€” normalized draw order
   // ---------------------------------------------------------------------------
 
   draw(): void {
@@ -1272,7 +1319,7 @@ export class GPURenderer {
       this.borderPass.markGlobalDirty();
       this.defenseCoveragePass.markDirty();
     }
-    // Heat decay only runs while fallout is in play — (re)activate whenever a
+    // Heat decay only runs while fallout is in play â€” (re)activate whenever a
     // fallout bit flipped in the tile state that just reached the GPU.
     if (this.territoryPass.consumeFalloutTouched()) {
       this.heatManager.activate();
@@ -1377,12 +1424,21 @@ export class GPURenderer {
     this.updateSelectionBox();
     this.selectionBoxPass.draw(cam, this.frameTick);
     this.moveIndicatorPass.draw(cam, zoom);
+    // Battle plans sit above the army markers and below names: a plan has to
+    // read on top of the armies executing it, but player names stay legible.
+    if (this.settings.battlePlan.enabled) {
+      this.battlePlanPass.draw(cam, zoom);
+    }
     this.nukeTelegraphPass.draw(cam);
     if (pe.trail) this.trailPass.draw(cam);
     // Spiral vortexes sit above the plain trails, below the missiles that
-    // trail them. Skipped in alt view — the strategic overlay stays effects-free.
+    // trail them. Skipped in alt view â€” the strategic overlay stays effects-free.
     if (!this.altView) this.spiralRibbonPass.draw(cam);
     if (pe.unit) this.unitPass.drawMissiles(cam);
+    // Army markers sit above every unit and structure so a formation standing
+    // behind a city is still findable, and below the FX and world text so the
+    // name above the marker is never clipped.
+    if (pe.armyMarker) this.armyMarkerPass.draw(cam, zoom);
 
     if (pe.fx) {
       this.fxPass.tick();
@@ -1447,7 +1503,7 @@ export class GPURenderer {
     this.mapLayerPasses.get(layerId)?.setVisible(visible);
   }
 
-  /** Set the alpha multiplier for a single layer (0–1). */
+  /** Set the alpha multiplier for a single layer (0â€“1). */
   setLayerAlpha(layerId: string, alpha: number): void {
     this.mapLayerPasses.get(layerId)?.setAlpha(alpha);
   }
@@ -1509,8 +1565,10 @@ export class GPURenderer {
     this.worldTextPass.dispose();
     this.selectionBoxPass.dispose();
     this.moveIndicatorPass.dispose();
+    this.battlePlanPass.dispose();
     this.nukeTrajectoryPass.dispose();
     this.nukeTelegraphPass.dispose();
+    this.armyMarkerPass.dispose();
     this.barPass.dispose();
     disposeGPUResources(this.gl, this.res);
     this.gl.deleteTexture(this.paletteTex);
@@ -1524,7 +1582,7 @@ export class GPURenderer {
     this.gl.deleteTexture(this.sceneTarget.tex);
     this.lastUnits = new Map();
     this.lastStructures = new Map();
-    // Deleting GL resources isn't enough — the context itself counts against
+    // Deleting GL resources isn't enough â€” the context itself counts against
     // the browser's WebGL context limit until it's GC'd, which is unreliable
     // on mobile. Explicitly drop it so repeated game starts don't overflow.
     this.gl.getExtension("WEBGL_lose_context")?.loseContext();

@@ -2,12 +2,19 @@ import quickChatData from "resources/QuickChat.json";
 import { z } from "zod";
 import { zb } from "../../zbin";
 import {
+  BATTLE_PLAN_MAX_ARMIES,
+  BATTLE_PLAN_MAX_FRONTIER_TILES,
+  BATTLE_PLAN_MAX_ROUTE_STEPS,
+} from "./configuration/BattlePlanBalance";
+import {
   ColorPaletteSchema,
   CosmeticNameSchema,
   EffectTypeSchema,
   PatternDataSchema,
 } from "./CosmeticSchemas";
 import type { GameEvent } from "./EventBus";
+import { ARMY_NAME_MAX_LENGTH } from "./game/ArmyName";
+import { BATTLE_PLAN_ORDERS } from "./game/BattlePlan";
 import {
   AllPlayers,
   Difficulty,
@@ -54,7 +61,12 @@ export type Intent =
   | KickPlayerIntent
   | TogglePauseIntent
   | UpdateGameConfigIntent
-  | ToggleGameStartTimer;
+  | ToggleGameStartTimer
+  | CreateArmyIntent
+  | RenameArmyIntent
+  | SetArmyCompositionIntent
+  | ArmyOrderIntent
+  | BattlePlanIntent;
 
 export type AttackIntent = z.infer<typeof AttackIntentSchema>;
 export type CancelAttackIntent = z.infer<typeof CancelAttackIntentSchema>;
@@ -91,6 +103,13 @@ export type UpdateGameConfigIntent = z.infer<
 export type ToggleGameStartTimer = z.infer<
   typeof ToggleGameStartTimerIntentSchema
 >;
+export type CreateArmyIntent = z.infer<typeof CreateArmyIntentSchema>;
+export type RenameArmyIntent = z.infer<typeof RenameArmyIntentSchema>;
+export type SetArmyCompositionIntent = z.infer<
+  typeof SetArmyCompositionIntentSchema
+>;
+export type ArmyOrderIntent = z.infer<typeof ArmyOrderIntentSchema>;
+export type BattlePlanIntent = z.infer<typeof BattlePlanIntentSchema>;
 
 export type Turn = z.infer<typeof TurnSchema>;
 export type GameConfig = z.infer<typeof GameConfigSchema>;
@@ -293,10 +312,14 @@ export const RENDERABLE_NAME_HAS_ALNUM_RE = new RegExp(
 );
 
 // Requires at least one non-space so a name is never all padding.
+//
+// Private-lobby build: .min(1) (widened from 3) so 1-2 character nicknames
+// travel the wire. Widening is safe for archived records; the upper bound
+// stays 27 and is never narrowed (see the note above).
 export const UsernameSchema = z
   .string()
   .regex(new RegExp(`^(?=.*\\S)[${RENDERABLE_NAME_CHARS}]+$`, "u"))
-  .min(3)
+  .min(1)
   .max(27);
 
 export const ClanTagSchema = z
@@ -818,6 +841,107 @@ export const ToggleGameStartTimerIntentSchema = z.object({
   type: z.literal("toggle_game_start_timer"),
 });
 
+// Armies (Prompt 3.4, 3.5). Four intents cover the whole army lifecycle:
+// raise one, name it, compose it, order it. `army_order` is a single tagged
+// union so the client cannot send two contradictory orders in one frame, and
+// `str`/`composition` are validated by the executions (see game/ArmyName.ts
+// and game/ArmyComposition.ts) — the schema only bounds what it must to keep
+// the wire small.
+
+export const CreateArmyIntentSchema = z.object({
+  type: z.literal("create_army"),
+  tile: zb.uint(),
+  /** Troops to move out of the owner's pool into the army. */
+  troops: zb.float({ min: 0 }),
+  /** Optional custom name; omitted or null means the game generates one. */
+  name: z.string().max(ARMY_NAME_MAX_LENGTH).nullable(),
+  composition: z
+    .object({
+      infantry: zb.uint({ max: 100 }),
+      armor: zb.uint({ max: 100 }),
+      artillery: zb.uint({ max: 100 }),
+      support: zb.uint({ max: 100 }),
+    })
+    .nullable(),
+});
+
+export const RenameArmyIntentSchema = z.object({
+  type: z.literal("rename_army"),
+  armyId: zb.uint(),
+  name: z.string(),
+});
+
+export const SetArmyCompositionIntentSchema = z.object({
+  type: z.literal("set_army_composition"),
+  armyId: zb.uint(),
+  composition: z.object({
+    infantry: zb.uint({ max: 100 }),
+    armor: zb.uint({ max: 100 }),
+    artillery: zb.uint({ max: 100 }),
+    support: zb.uint({ max: 100 }),
+  }),
+});
+
+export const ArmyOrderIntentSchema = z.object({
+  type: z.literal("army_order"),
+  armyId: zb.uint(),
+  // A discriminated union, not a loose object: one order per intent, and the
+  // payload is exactly what that order needs.
+  order: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("hold") }),
+    z.object({ type: z.literal("stop") }),
+    z.object({ type: z.literal("move"), tile: zb.uint() }),
+    z.object({ type: z.literal("attack"), tile: zb.uint() }),
+    z.object({ type: z.literal("createFront"), tile: zb.uint() }),
+    z.object({ type: z.literal("reinforce"), troops: zb.float({ min: 0 }) }),
+  ]),
+});
+
+/**
+ * Drawn battle-plan geometry, as a client proposes it (Prompt 4.2, 4.3).
+ *
+ * Both arrays are *proposals*. The simulation re-derives every tile from map
+ * state before any of it is stored: `frontier` keeps only tiles the sender owns
+ * and that border ground they do not, and `route` is not trusted at all — it is
+ * read only for the tile the player was pointing at, and the canonical route is
+ * then searched over passable land. See game/BattlePlanRoute.ts.
+ *
+ * The array caps are not advisory. They bound the validator's work before any
+ * map traversal happens, so a hostile client cannot turn a drag into a
+ * hundred-thousand-entry search.
+ */
+const BattlePlanProposalSchema = z.object({
+  kind: z.enum(BATTLE_PLAN_ORDERS),
+  frontier: z.array(zb.uint()).max(BATTLE_PLAN_MAX_FRONTIER_TILES),
+  route: z.array(zb.uint()).max(BATTLE_PLAN_MAX_ROUTE_STEPS),
+  armyIDs: z.array(zb.uint()).max(BATTLE_PLAN_MAX_ARMIES),
+});
+
+export const BattlePlanIntentSchema = z.object({
+  type: z.literal("battle_plan"),
+  // One discriminated union so a frame carries exactly one action, and the
+  // payload is exactly what that action needs. Variant order is the wire tag,
+  // so these are append-only (see zbin/README.md).
+  action: z.discriminatedUnion("type", [
+    // Draw and activate: the gesture, the armies, and a request to start.
+    z.object({ type: z.literal("create"), ...BattlePlanProposalSchema.shape }),
+    // Redraw an existing plan's geometry and reset its progress.
+    z.object({
+      type: z.literal("redraw"),
+      planId: zb.uint(),
+      ...BattlePlanProposalSchema.shape,
+    }),
+    z.object({ type: z.literal("pause"), planId: zb.uint() }),
+    z.object({ type: z.literal("resume"), planId: zb.uint() }),
+    z.object({ type: z.literal("delete"), planId: zb.uint() }),
+    z.object({
+      type: z.literal("reassign"),
+      planId: zb.uint(),
+      armyIDs: z.array(zb.uint()).max(BATTLE_PLAN_MAX_ARMIES),
+    }),
+  ]),
+});
+
 export const IntentSchema = z.discriminatedUnion("type", [
   AttackIntentSchema,
   CancelAttackIntentSchema,
@@ -844,6 +968,11 @@ export const IntentSchema = z.discriminatedUnion("type", [
   TogglePauseIntentSchema,
   UpdateGameConfigIntentSchema,
   ToggleGameStartTimerIntentSchema,
+  CreateArmyIntentSchema,
+  RenameArmyIntentSchema,
+  SetArmyCompositionIntentSchema,
+  ArmyOrderIntentSchema,
+  BattlePlanIntentSchema,
 ]);
 
 // StampedIntent = Intent with server-stamped clientID (used in turns and execution)

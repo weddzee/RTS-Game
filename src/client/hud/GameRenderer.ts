@@ -2,6 +2,8 @@ import { EventBus } from "../../core/EventBus";
 import { UserSettings } from "../../core/game/UserSettings";
 import { Controller } from "../Controller";
 import { AmbienceController } from "../controllers/AmbienceController";
+import { ArmySelectionController } from "../controllers/ArmySelectionController";
+import { BattlePlanController } from "../controllers/BattlePlanController";
 import { AttackingTroopsController } from "../controllers/AttackingTroopsController";
 import { BuildPreviewController } from "../controllers/BuildPreviewController";
 import { HoverHighlightController } from "../controllers/HoverHighlightController";
@@ -21,6 +23,7 @@ import { GameView } from "../view";
 import { FrameProfiler } from "./FrameProfiler";
 import { ActionableEvents } from "./layers/ActionableEvents";
 import { AlertFrame } from "./layers/AlertFrame";
+import { ArmyPanel } from "./layers/ArmyPanel";
 import { AttacksDisplay } from "./layers/AttacksDisplay";
 import { BuildMenu } from "./layers/BuildMenu";
 import { ChatDisplay } from "./layers/ChatDisplay";
@@ -197,7 +200,7 @@ export function createRenderer(
   // SoundManager, which caches its volumes at construction, and UIState so the
   // attack ratio slider shows the session value the HUD slider may have set.
   // It also owns the advanced graphics options now, so it takes this game's
-  // map layers and the two renderer callbacks they apply through — the rest of
+  // map layers and the two renderer callbacks they apply through Ă˘â‚¬â€ť the rest of
   // those options reach the renderer through the settings-changed event
   // ClientGameRunner listens for.
   const gameSettingsModal = document.getElementById(
@@ -229,6 +232,36 @@ export function createRenderer(
   unitDisplay.game = game;
   unitDisplay.eventBus = eventBus;
   unitDisplay.uiState = uiState;
+
+  // Armies (Prompt 3): one controller owns selection and the one-shot tile
+  // picker; the panel shares the controller so a button press and the click it
+  // is waiting for can never disagree about which mode is active.
+  const armySelection = new ArmySelectionController(
+    game,
+    eventBus,
+    transformHandler,
+  );
+  // The plan buttons and the drag gesture share one controller, so a button
+  // press and the drag it is waiting for cannot disagree about which mode is
+  // armed.
+  const battlePlans = new BattlePlanController(
+    game,
+    eventBus,
+    transformHandler,
+    view,
+  );
+
+  const armyPanel = document.querySelector("army-panel") as ArmyPanel;
+  if (!(armyPanel instanceof ArmyPanel)) {
+    console.error("army panel not found");
+  }
+  armyPanel.game = game;
+  armyPanel.eventBus = eventBus;
+  armyPanel.selection = armySelection;
+  // The plan buttons and the drag gesture are the same controller, so a button
+  // press and the drag it is waiting for cannot disagree about which mode is
+  // armed.
+  armyPanel.plans = battlePlans;
 
   const playerPanel = document.querySelector("player-panel") as PlayerPanel;
   if (!(playerPanel instanceof PlayerPanel)) {
@@ -315,6 +348,8 @@ export function createRenderer(
 
   const layers: Controller[] = [
     new WarshipSelectionController(game, eventBus, transformHandler, view),
+    armySelection,
+    battlePlans,
     new BuildPreviewController(
       game,
       eventBus,
@@ -349,6 +384,7 @@ export function createRenderer(
     immunityTimer,
     gameLeftSidebar,
     unitDisplay,
+    armyPanel,
     gameRightSidebar,
     controlPanel,
     playerInfo,

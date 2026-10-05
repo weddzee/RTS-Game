@@ -4,6 +4,8 @@ import { PathFinder } from "../pathfinding/types";
 import { AllPlayersStats, ClientID } from "../Schemas";
 import type { ExecRecord, SnapshotWriter } from "../snapshot/SnapshotContext";
 import { formatPlayerDisplayName } from "../Util";
+import type { Army, ArmyFront } from "./Army";
+import type { BattlePlan } from "./BattlePlan";
 import { GameMap, TileRef } from "./GameMap";
 import {
   GameUpdate,
@@ -884,6 +886,39 @@ export interface Game extends GameMap {
     predicate?: UnitPredicate,
     includeUnderConstruction?: boolean,
   ): Array<{ unit: Unit; distSquared: number }>;
+
+  // Armies
+  // See game/Army.ts. Armies are created from a slice of a player's troop
+  // pool and are authoritative core state, not client-side bookkeeping.
+  /** Every active army, in creation order. */
+  armies(): Army[];
+  /** Armies belonging to one player, in creation order. */
+  armiesOf(player: Player | PlayerID): Army[];
+  army(id: number): Army | undefined;
+  /** Fronts this game has raised. See ArmyFront. */
+  fronts(): ArmyFront[];
+  front(id: number): ArmyFront | undefined;
+  addArmy(army: Army): void;
+  removeArmy(army: Army): void;
+  /** Allocates the next army id. Game-wide, monotonic. */
+  nextArmyID(): number;
+  /** Allocates the next front id. Game-wide, monotonic. */
+  nextFrontID(): number;
+
+  // Battle plans
+  // See game/BattlePlan.ts. A plan is the canonical record of a drawn order: a
+  // validated frontier, a route derived from map topology, and the armies
+  // carrying it out. Authoritative core state like armies — the client only
+  // ever proposes the gesture.
+  /** Every live battle plan, in creation order. */
+  battlePlans(): BattlePlan[];
+  /** Battle plans belonging to one player, in creation order. */
+  battlePlansOf(player: Player | PlayerID): BattlePlan[];
+  battlePlan(id: number): BattlePlan | undefined;
+  addBattlePlan(plan: BattlePlan): void;
+  removeBattlePlan(plan: BattlePlan): void;
+  /** Allocates the next battle plan id. Game-wide, monotonic. */
+  nextBattlePlanID(): number;
 
   addExecution(...exec: Execution[]): void;
   displayMessage(

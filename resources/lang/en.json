@@ -145,6 +145,93 @@
   "account_settings_modal": {
     "title": "Account Settings"
   },
+  "army_panel": {
+    "apply": "Apply",
+    "at_cap": "You already have the maximum of {cap} armies.",
+    "battle_record": "Battle record",
+    "cancel": "Cancel",
+    "category": {
+      "armor": "Armor",
+      "artillery": "Artillery",
+      "infantry": "Infantry",
+      "support": "Support"
+    },
+    "commander": "Commander:",
+    "commander_unassigned": "Unassigned",
+    "composition": "Composition",
+    "composition_hint": "Shares are normalized to 100%.",
+    "create_action": "Raise Army",
+    "create_available": "Available: {troops}",
+    "create_ceiling": "Max: {troops}",
+    "create_count": "{count} of {cap} armies",
+    "create_name_placeholder": "Leave blank for a generated name",
+    "create_title": "Raise an Army",
+    "create_troops": "Troops to commit",
+    "current_order": {
+      "attack": "Drawing offensive",
+      "create_front": "Holding a front",
+      "hold": "Holding",
+      "move": "Moving",
+      "reinforce": "Reinforcing",
+      "stop": "Stopped"
+    },
+    "edit_composition": "Edit",
+    "experience": "Experience",
+    "name_error": {
+      "empty": "An army needs a name.",
+      "notAString": "That is not a name.",
+      "onlyStrippedCharacters": "That name is only invisible characters.",
+      "tooLong": "Army names are at most 32 characters."
+    },
+    "name_optional": "Name (optional)",
+    "name_placeholder": "Name this army",
+    "order": "Order:",
+    "order_create_front": "Create Front",
+    "order_hold": "Hold",
+    "order_move": "Move",
+    "order_offensive": "Draw Offensive",
+    "order_stop": "Stop",
+    "orders": "Orders",
+    "organization": "Morale:",
+    "pick_tile": {
+      "attack": "Click a tile to draw an offensive on it.",
+      "create": "Click a tile inside your territory to muster the army there.",
+      "createFront": "Click a tile to anchor the front there.",
+      "move": "Click a tile to move the army there."
+    },
+    "preset": {
+      "armored": "Armored",
+      "artillery": "Artillery",
+      "balanced": "Balanced",
+      "fastAssault": "Fast Assault",
+      "infantry": "Infantry"
+    },
+    "rename": "Rename",
+    "save": "Save",
+    "stat": {
+      "battles": "Battles",
+      "battles_won": "{won} won of {fought}",
+      "casualties_inflicted": "Dealt",
+      "casualties_taken": "Lost",
+      "tiles_captured": "Tiles taken"
+    },
+    "strength": "Strength:",
+    "supply": "Supply:",
+    "supply_status": {
+      "cut": "Cut",
+      "starving": "Starving",
+      "strained": "Strained",
+      "sufficient": "Full"
+    },
+    "tier": {
+      "elite": "Elite",
+      "recruit": "Recruit",
+      "regular": "Regular",
+      "veteran": "Veteran"
+    },
+    "title": "Army",
+    "veterancy": "Veterancy:"
+  },
   "ban_notice": {
     "appeal": "If you believe this is a mistake, contact us on Discord.",
     "category": {
@@ -165,6 +252,36 @@
     "reason": "Reason: {reason}",
     "title": "Your account is banned",
     "until": "Banned until {date}."
+  },
+  "battle_plan": {
+    "delete": "Delete plan",
+    "drawing": {
+      "fallback": "Drag a defensive line inside your own territory.",
+      "frontline": "Drag along your border to set the front.",
+      "offensive": "Drag from your border to draw an offensive arrow.",
+      "spearhead": "Drag a narrow, aggressive thrust from your border."
+    },
+    "kind": {
+      "fallback": "Fallback line",
+      "frontline": "Frontline",
+      "hold": "Holding",
+      "move": "Move",
+      "offensive": "Offensive",
+      "spearhead": "Spearhead"
+    },
+    "order_fallback": "Fallback",
+    "order_frontline": "Frontline",
+    "order_offensive": "Draw Offensive",
+    "order_spearhead": "Spearhead",
+    "pause": "Pause plan",
+    "resume": "Resume plan",
+    "status": {
+      "active": "active",
+      "completed": "arrived",
+      "paused": "paused"
+    },
+    "summary": "{frontier} front · {route} waypoints · {armies} armies",
+    "title": "Battle plan"
   },
   "build_menu": {
     "desc": {

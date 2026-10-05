@@ -1,4 +1,13 @@
 import { AllPlayersStats, ClientID, Winner } from "../Schemas";
+import type {
+  ArmyCombatState,
+  ArmyMovementState,
+  ArmyOrder,
+  ArmyStatistics,
+} from "./Army";
+import type { BattlePlanOrder, BattlePlanStatus } from "./BattlePlan";
+import type { ArmyComposition, ArmySupplyStatus } from "./ArmyComposition";
+import type { ArmyVeterancyTier } from "./ArmyVeterancy";
 import {
   EmojiMessage,
   GameUpdates,
@@ -106,6 +115,8 @@ export enum GameUpdateType {
   SpawnPhaseEnd,
   GamePaused,
   DonateEvent,
+  Army,
+  BattlePlan,
 }
 
 export type GameUpdate =
@@ -131,7 +142,78 @@ export type GameUpdate =
   | EmbargoUpdate
   | SpawnPhaseEndUpdate
   | GamePausedUpdate
-  | DonateEventUpdate;
+  | DonateEventUpdate
+  | ArmyUpdate
+  | BattlePlanUpdate;
+
+/**
+ * One army's full state, worker -> main thread.
+ *
+ * Always complete rather than diffed: an army's updates are rare (an order, a
+ * battle tick, an upkeep tick) and the panel needs the whole record to render
+ * without a local merge step. Disbanding is `isActive: false`, which the
+ * consumer turns into a removal.
+ */
+export interface ArmyUpdate {
+  type: GameUpdateType.Army;
+  /** Game-wide army id. Stable for the army's lifetime. */
+  id: number;
+  /** Owner's small id. Drives the marker color and friend/enemy filtering. */
+  ownerID: number;
+  name: string;
+  tile: TileRef;
+  frontId: number | null;
+  /** Live troop count. Fractional, like attack stacks. */
+  strength: number;
+  /** Cumulative troops paid into the army; the reinforce ceiling. */
+  manpower: number;
+  composition: ArmyComposition;
+  tier: ArmyVeterancyTier;
+  xp: number;
+  organization: number;
+  supply: number;
+  supplyStatus: ArmySupplyStatus;
+  order: ArmyOrder;
+  combatState: ArmyCombatState;
+  movementState: ArmyMovementState;
+  createdAt: Tick;
+  statistics: ArmyStatistics;
+  isActive: boolean;
+}
+
+/**
+ * One battle plan's full state, worker -> main thread (Prompt 4).
+ *
+ * Whole rather than diffed, for the same reason as ArmyUpdate: a plan is few,
+ * changes rarely, and every client needs the complete canonical geometry to
+ * draw the front line and the arrow. `isActive: false` is the tombstone.
+ *
+ * `frontier` and `route` are the *canonical* geometry the simulation derived,
+ * not the gesture that was drawn. Clients draw these; they never draw what the
+ * player scribbled, which is why two clients cannot disagree about where an
+ * arrow points.
+ */
+export interface BattlePlanUpdate {
+  type: GameUpdateType.BattlePlan;
+  /** Game-wide plan id. Stable for the plan's lifetime. */
+  id: number;
+  ownerID: number;
+  kind: BattlePlanOrder;
+  status: BattlePlanStatus;
+  /** Owner's border tiles the plan covers. Tiles the owner holds, by construction. */
+  frontier: TileRef[];
+  /** Ordered strategic waypoints, derived from map topology. */
+  route: TileRef[];
+  /** Defensive line in owned territory; only meaningful for fallback plans. */
+  fallbackLine: TileRef[];
+  armyIDs: number[];
+  /** Index into `route` the plan is working toward. */
+  step: number;
+  createdAt: Tick;
+  /** Bumped on every canonical change, so the renderer can skip idle redraws. */
+  version: number;
+  isActive: boolean;
+}
 
 export interface BonusEventUpdate {
   type: GameUpdateType.BonusEvent;

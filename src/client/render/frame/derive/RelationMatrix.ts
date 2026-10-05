@@ -8,6 +8,25 @@ const RELATION_EMBARGO = 2;
 /** Reusable matrix buffer — one allocation, rewritten each frame. */
 const matrix = new Uint8Array(RELATION_SIZE * RELATION_SIZE);
 
+/**
+ * Whether two players stand on friendly terms, read straight out of a matrix
+ * built by buildRelationMatrix.
+ *
+ * Exposed because "is this player my ally" is a question several subsystems ask
+ * and none of them should be re-deriving alliance rules. Zero and out-of-range
+ * ids are never friendly, so terra nullius and a stale id both read as hostile
+ * rather than throwing.
+ */
+export function isFriendlyIn(
+  matrix: Uint8Array,
+  size: number,
+  a: number,
+  b: number,
+): boolean {
+  if (a <= 0 || b <= 0 || a >= size || b >= size) return false;
+  return matrix[a * size + b] === RELATION_FRIENDLY;
+}
+
 export interface RelationMatrixResult {
   matrix: Uint8Array;
   size: number;

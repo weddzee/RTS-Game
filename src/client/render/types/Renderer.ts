@@ -126,6 +126,69 @@ export interface UnitState {
   samUpgradeDuration: number | null;
 }
 
+/**
+ * Client-side mirror of one army (Prompt 3).
+ *
+ * ArmyUpdate is delivered whole, not diffed, so this is simply the last
+ * complete record received — no merge step, no per-field presence flags. The
+ * object is mutated in place by GameView so passes can hold a stable reference.
+ */
+export interface ArmyState {
+  id: number;
+  ownerID: number;
+  /** The custom name, already validated and normalized by the simulation. */
+  name: string;
+  tile: TileRef;
+  frontId: number | null;
+  strength: number;
+  manpower: number;
+  composition: {
+    infantry: number;
+    armor: number;
+    artillery: number;
+    support: number;
+  };
+  tier: string;
+  xp: number;
+  organization: number;
+  supply: number;
+  supplyStatus: string;
+  order: { type: string; tile?: number; troops?: number };
+  combatState: string;
+  movementState: string;
+  createdAt: number;
+  statistics: {
+    battlesFought: number;
+    battlesWon: number;
+    casualtiesInflicted: number;
+    casualtiesTaken: number;
+    tilesCaptured: number;
+  };
+  isActive: boolean;
+}
+
+/**
+ * One army's marker instance, as it crosses into ArmyMarkerPass (Prompt 3.6).
+ *
+ * Deliberately just the draw data: the flag word is packed by the producer
+ * (see `packArmyMarkerFlags`) and read straight out of the instance buffer, so
+ * the pass never has to know what "isOwn" meant. Strength and friendliness have
+ * already been resolved into the size and the flags.
+ */
+export interface ArmyMarker {
+  /** Tile-space center, including any friendly-stack fan-out offset. */
+  x: number;
+  y: number;
+  /** Marker radius in tiles, so the marker holds its world size across zooms. */
+  sizeTiles: number;
+  /** Packed boolean flags; see `packArmyMarkerFlags`. */
+  flags: number;
+  /** Owner color, 0..1 per channel. */
+  r: number;
+  g: number;
+  b: number;
+}
+
 /** Minimal dead-unit data needed by the FX pass. */
 export interface DeadUnitFx {
   unitType: string;

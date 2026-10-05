@@ -1,3 +1,5 @@
+import type { Army } from "../game/Army";
+import type { BattlePlan } from "../game/BattlePlan";
 import type {
   Attack,
   Execution,
@@ -53,6 +55,8 @@ export class RefTable<T> {
  */
 export class SnapshotWriter {
   readonly units = new RefTable<Unit>();
+  readonly armies = new RefTable<Army>();
+  readonly battlePlans = new RefTable<BattlePlan>();
   readonly attacks = new RefTable<Attack>();
   readonly alliances = new RefTable<MutableAlliance>();
   readonly allianceRequests = new RefTable<object>();
@@ -81,6 +85,22 @@ export class SnapshotWriter {
 
   unitOrNull(u: Unit | null | undefined): number | null {
     return u ? this.units.ref(u) : null;
+  }
+
+  army(a: Army): number {
+    return this.armies.ref(a);
+  }
+
+  armyOrNull(a: Army | null | undefined): number | null {
+    return a ? this.armies.ref(a) : null;
+  }
+
+  battlePlan(p: BattlePlan): number {
+    return this.battlePlans.ref(p);
+  }
+
+  battlePlanOrNull(p: BattlePlan | null | undefined): number | null {
+    return p ? this.battlePlans.ref(p) : null;
   }
 
   attack(a: Attack): number {
@@ -130,6 +150,8 @@ export class SnapshotReader {
     readonly game: GameImpl,
     private readonly tables: {
       units: Unit[];
+      armies: Army[];
+      battlePlans: BattlePlan[];
       attacks: Attack[];
       alliances: MutableAlliance[];
       allianceRequests: object[];
@@ -181,6 +203,22 @@ export class SnapshotReader {
 
   unitOrNull(i: number | null): Unit | null {
     return i === null ? null : this.unit(i);
+  }
+
+  army(i: number): Army {
+    return this.row(this.tables.armies, i, "army");
+  }
+
+  armyOrNull(i: number | null): Army | null {
+    return i === null ? null : this.army(i);
+  }
+
+  battlePlan(i: number): BattlePlan {
+    return this.row(this.tables.battlePlans, i, "battle plan");
+  }
+
+  battlePlanOrNull(i: number | null): BattlePlan | null {
+    return i === null ? null : this.battlePlan(i);
   }
 
   attack(i: number): Attack {

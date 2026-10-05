@@ -7,6 +7,7 @@ export {
 } from "./Renderer";
 export type {
   AllianceData,
+  ArmyState,
   AttackData,
   AttackRingInput,
   ConquestFx,
@@ -27,6 +28,15 @@ export type {
 
 // Frame data — boundary contract between game integration and features
 export type { FrameData } from "./FrameData";
+
+// Army marker instances — the GL-free half of ArmyMarkerPass, so producers do
+// not have to import the pass (and its shaders) just to pack a flag word.
+export {
+  ARMY_MARKER_FLAGS,
+  ARMY_MARKER_FLOATS_PER_INSTANCE,
+  packArmyMarkerFlags,
+} from "./ArmyMarker";
+export type { ArmyMarker } from "./ArmyMarker";
 
 // Frame events — per-frame ephemeral events (rendering FX)
 export type { BonusEvent, FrameEvents } from "./FrameEvents";

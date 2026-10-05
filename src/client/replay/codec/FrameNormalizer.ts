@@ -60,6 +60,7 @@ export const UPDATE_TYPE_ROUTING: Record<
   Tile: "entity",
   Unit: "entity",
   Player: "entity",
+  BattlePlan: "entity",
   DisplayEvent: "misc",
   DisplayChatEvent: "misc",
   AllianceRequest: "misc",
@@ -81,6 +82,12 @@ export const UPDATE_TYPE_ROUTING: Record<
   SpawnPhaseEnd: "events",
   GamePaused: "misc",
   DonateEvent: "misc",
+  // Stored verbatim rather than folded into the entity state. "entity" would
+  // mean the normalizer reconstructs players/units/tiles from the frame, and it
+  // has no army path yet — recording the whole ArmyUpdate per frame keeps the
+  // data in the replay instead of dropping it, and army markers appear in the
+  // replay viewer when the codec learns to fold them into frame state.
+  Army: "misc",
 };
 
 /**

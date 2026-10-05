@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { renderTroops } from "../../client/Utils";
-import { AttackLogicInput } from "../configuration/Config";
+import { ArmyAttackModifiers, AttackLogicInput } from "../configuration/Config";
+import { escalationLevelForGame } from "../Escalation";
+import type { Army } from "../game/Army";
+import {
+  attackerLossDivisor,
+  breakthroughMultiplier,
+  offenseMultiplier,
+} from "../game/ArmyComposition";
+import {
+  xpForCasualtiesInflicted,
+  xpForTilesCaptured,
+} from "../game/ArmyVeterancy";
 import {
   Attack,
   Difficulty,
@@ -62,10 +73,19 @@ export class AttackExecution implements Execution {
     private _targetID: PlayerID | null,
     private sourceTile: TileRef | null = null,
     private removeTroops: boolean = true,
+    // Prompt 3: when this attack is an army's offensive, the army owns the
+    // troops and receives the combat bookkeeping (losses, captures, veterancy,
+    // combat state). Null — the ordinary click-to-attack path — is unchanged.
+    private army: Army | null = null,
   ) {}
 
   public targetID(): PlayerID | null {
     return this._targetID;
+  }
+
+  /** The army this offensive belongs to, or null for an ordinary attack. */
+  armyRef(): Army | null {
+    return this.army;
   }
 
   activeDuringSpawnPhase(): boolean {
@@ -124,19 +144,38 @@ export class AttackExecution implements Execution {
 
     if (this.target.isPlayer() && !this._owner.canAttackPlayer(this.target)) {
       this.active = false;
+      this.releaseArmy(false);
       return;
     }
 
     this.startTroops ??= this.mg
       .config()
       .attackAmount(this._owner, this.target);
+    if (this.army !== null && this.army.owner() !== this._owner) {
+      // The army and the attack must belong to the same player; anything else
+      // is a bug or a forged intent, and neither may spend the other's troops.
+      console.warn("army attack owner does not own the army");
+      this.active = false;
+      return;
+    }
     if (this.removeTroops) {
-      this.startTroops = Math.min(this._owner.troops(), this.startTroops);
-      // Take the amount that was actually deducted, not the amount asked for.
-      // removeTroops() floors, so a fractional request leaves the attack
-      // holding troops the owner never paid for — and retreat refunds the
-      // combined total, turning the leftover fractions into free troops.
-      this.startTroops = this._owner.removeTroops(this.startTroops);
+      if (this.army !== null) {
+        // An army's offensive is paid for out of the army, not out of the
+        // owner's free troop pool — the troops already left the pool when the
+        // army was raised.
+        this.startTroops = Math.min(
+          this.army.totalStrength(),
+          this.startTroops,
+        );
+        this.startTroops = this.army.removeStrength(this.startTroops);
+      } else {
+        this.startTroops = Math.min(this._owner.troops(), this.startTroops);
+        // Take the amount that was actually deducted, not the amount asked for.
+        // removeTroops() floors, so a fractional request leaves the attack
+        // holding troops the owner never paid for — and retreat refunds the
+        // combined total, turning the leftover fractions into free troops.
+        this.startTroops = this._owner.removeTroops(this.startTroops);
+      }
     }
     this.attack = this._owner.createAttack(
       this.target,
@@ -161,6 +200,7 @@ export class AttackExecution implements Execution {
           incoming.setTroops(incoming.troops() - this.attack.troops());
           this.attack.delete();
           this.active = false;
+          this.releaseArmy(false);
           return;
         } else {
           this.attack.setTroops(this.attack.troops() - incoming.troops());
@@ -173,7 +213,11 @@ export class AttackExecution implements Execution {
         outgoing !== this.attack &&
         outgoing.target() === this.attack.target() &&
         // Boat attacks (sourceTile is not null) are not combined with other attacks
-        this.attack.sourceTile() === null
+        this.attack.sourceTile() === null &&
+        // An army's troops stay under its own command: merging would hand
+        // them to another (unnamed, possibly non-army) attack and the army
+        // would come back short.
+        this.army === null
       ) {
         this.attack.setTroops(this.attack.troops() + outgoing.troops());
         outgoing.delete();
@@ -244,9 +288,14 @@ export class AttackExecution implements Execution {
     }
 
     const survivors = this.attack.troops() - deaths;
-    this._owner.addTroops(survivors);
+    // An army's survivors go back into the army — the same troops it committed
+    // at init — not into the owner's free pool. addStrength, not reinforce:
+    // nothing was paid for them a second time.
+    if (this.army !== null) this.army.addStrength(survivors);
+    else this._owner.addTroops(survivors);
     this.attack.delete();
     this.active = false;
+    this.releaseArmy(true);
 
     // Not all retreats are canceled attacks
     if (this.attack.retreated()) {
@@ -279,6 +328,9 @@ export class AttackExecution implements Execution {
 
     if (!this.attack.isActive()) {
       this.active = false;
+      // The attack was deleted underneath us (a sweep, or a merge we cannot
+      // be part of). Anything still on it is lost.
+      this.releaseArmy(false);
       return;
     }
 
@@ -296,6 +348,7 @@ export class AttackExecution implements Execution {
       if (troopCount < 1) {
         this.attack.delete();
         this.active = false;
+        this.releaseArmy(false);
         return;
       }
 
@@ -338,8 +391,59 @@ export class AttackExecution implements Execution {
         targetPlayer.removeTroops(defenderTroopLoss);
       }
       this._owner.conquer(tileToConquer);
+      if (this.army !== null)
+        this.recordArmyProgress(attackerTroopLoss, defenderTroopLoss);
       this.handleDeadDefender();
     }
+  }
+
+  /**
+   * Mirror one conquered tile onto the army: its own losses (which also dilute
+   * its veterancy), the damage it did to the defender, and the experience for
+   * ground taken.
+   */
+  private recordArmyProgress(
+    attackerTroopLoss: number,
+    defenderTroopLoss: number,
+  ): void {
+    const army = this.army;
+    if (army === null) return;
+    if (attackerTroopLoss > 0) {
+      army.applyLosses(attackerTroopLoss);
+      army.addExperience(xpForCasualtiesInflicted(attackerTroopLoss));
+    }
+    if (defenderTroopLoss > 0) {
+      // Casualties the army inflicted are the defender's losses, so the same
+      // experience rate applies — the damage it deals is what teaches it.
+      army.recordCasualtiesInflicted(defenderTroopLoss);
+      army.addExperience(xpForCasualtiesInflicted(defenderTroopLoss));
+    }
+    army.recordTilesCaptured(1);
+    army.addExperience(xpForTilesCaptured(1));
+  }
+
+  /**
+   * Hand the army back to its own execution now that the fight is over.
+   *
+   * Called from every terminal path. `survivorsReturned` distinguishes the two
+   * endings: a retreat already put the survivors back on the army, whereas an
+   * attack deleted underneath us still has troops on it, and those are losses.
+   * No-op for an ordinary (non-army) attack.
+   */
+  private releaseArmy(survivorsReturned: boolean): void {
+    const army = this.army;
+    if (army === null || !army.isActive()) return;
+    if (!survivorsReturned && this.attack !== null) {
+      army.applyLosses(this.attack.troops());
+    }
+    // A fight that ended with troops still standing was won.
+    if (survivorsReturned && army.totalStrength() > 0) {
+      army.recordBattleWon();
+    }
+    army.setCombatState("none");
+    army.setMovementState("idle");
+    // The offensive is over whatever happened; standing orders resume.
+    army.setOrder({ type: "hold" });
   }
 
   private attackLogicInput(
@@ -383,6 +487,37 @@ export class AttackExecution implements Execution {
         ? this.mg.numTilesWithFallout() / this.mg.numLandTiles()
         : null,
       borderSize,
+      // Late-game pressure; 0 before the deadline (see Escalation).
+      escalationLevel: escalationLevelForGame(this.mg),
+      ...this.armyModifiers(),
+    };
+  }
+
+  /**
+   * Composition and veterancy folded into the per-tile combat math, on the
+   * 100 = neutral scale the army stats already use. Absent for an ordinary
+   * attack, which must resolve exactly as it did before armies existed.
+   */
+  private armyModifiers(): { attackerModifiers?: ArmyAttackModifiers } {
+    if (this.army === null) return {};
+    const stats = this.army.derivedStats();
+    const bonus = this.army.combatBonus();
+    // Breakthrough and veterancy both shorten the conquest cost, so an
+    // experienced armored army visibly takes ground faster.
+    const conquestCost =
+      (breakthroughMultiplier(stats) * bonus.conquestCostMultiplier) / 100;
+    return {
+      attackerModifiers: {
+        // A defensive composition bleeds less per tile; the divisor keeps the
+        // neutral case at 1x and floored so a pathological composition can
+        // never make an attack free.
+        lossDivisor: Math.max(
+          50,
+          (attackerLossDivisor(stats) * bonus.lossDivisor) / 100,
+        ),
+        defenderLossMultiplier: Math.max(50, offenseMultiplier(stats)),
+        conquestCostMultiplier: Math.max(25, conquestCost),
+      },
     };
   }
 
@@ -497,6 +632,7 @@ export class AttackExecution implements Execution {
       random: w.random(this.random),
       target: this.target === undefined ? null : w.owner(this.target),
       attack: this.attack === null ? null : w.attack(this.attack),
+      army: w.armyOrNull(this.army),
       startTroops: this.startTroops,
       owner: w.player(this._owner),
       targetID: this._targetID,
@@ -520,6 +656,7 @@ export class AttackExecution implements Execution {
       this.targetSmallID = s.target;
     }
     this.attack = s.attack === null ? null : r.attack(s.attack);
+    this.army = r.armyOrNull(s.army);
     // Scratch buffers, overwritten before every read.
     this.nbuf = [0, 0, 0, 0];
     this.nbuf2 = [0, 0, 0, 0];
@@ -547,6 +684,8 @@ const AttackExecutionStateSchema = z.object({
   /** Null until init() resolves the target. */
   target: zPlayerRef().nullable(),
   attack: zRef().nullable(),
+  /** The army whose troops this attack spends (Prompt 3); null for a click. */
+  army: zRef().nullable(),
   startTroops: zNum().nullable(),
   owner: zPlayerRef(),
   targetID: z.string().nullable(),
@@ -557,7 +696,11 @@ type AttackExecutionState = z.infer<typeof AttackExecutionStateSchema>;
 
 export const AttackExecutionSnapshot = execSnapshotType({
   name: "Attack",
-  version: 1,
+  version: 2,
   schema: AttackExecutionStateSchema,
+  migrations: {
+    // v1 predates armies: every attack was a click, so none of them had one.
+    1: (d: Record<string, unknown>) => ({ ...d, army: null }),
+  },
   cls: () => AttackExecution,
 });

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { renderNumber } from "../../client/Utils";
 import { UnitView } from "../../client/view";
+import { ARMY_UPDATE_INTERVAL_TICKS } from "../configuration/ArmyBalance";
 import { Config } from "../configuration/Config";
 import {
   SharedWaterCache,
@@ -28,11 +29,17 @@ import {
   zInt,
   zPlayerRef,
   zRef,
+  zTile,
 } from "../snapshot/SnapshotType";
 import { ATTACK_INDEX_SENT } from "../StatsSchemas";
 import { simpleHash } from "../Util";
 import { AllianceImpl } from "./AllianceImpl";
 import { AllianceRequestImpl } from "./AllianceRequestImpl";
+import type { Army, ArmyFront } from "./Army";
+import { ArmyImpl } from "./ArmyImpl";
+import { BATTLE_PLAN_UPDATE_INTERVAL_TICKS } from "../configuration/BattlePlanBalance";
+import type { BattlePlan } from "./BattlePlan";
+import { BattlePlanImpl } from "./BattlePlanImpl";
 import {
   Alliance,
   AllianceRequest,
@@ -119,14 +126,34 @@ export class GameImpl implements Game {
 
   allianceRequests: AllianceRequestImpl[] = [];
 
+  /** Active armies by id, and the creation-order list the views iterate. */
+  private _armyMap = new Map<number, ArmyImpl>();
+  private _armies: ArmyImpl[] = [];
+  private _fronts: ArmyFront[] = [];
+
+  /**
+   * Battle plans by id, plus the creation-order list the views iterate.
+   * Separate from `_fronts` on purpose: a plan is the canonical executed record
+   * (validated geometry, route, progress), while an ArmyFront is the older
+   * single-tile grouping the army panel's "create front" order produces. See
+   * game/BattlePlan.ts.
+   */
+  private _battlePlanMap = new Map<number, BattlePlanImpl>();
+  private _battlePlans: BattlePlanImpl[] = [];
+
   private nextPlayerID = 1;
   private _nextUnitID = 1;
+  /** Monotonic army/front id allocator. See nextArmyID/nextFrontID. */
+  private _nextArmyID = 1;
+  private _nextFrontID = 1;
+  /** Monotonic battle plan id allocator. See nextBattlePlanID. */
+  private _nextBattlePlanID = 1;
 
   private updates: GameUpdates = createGameUpdatesMap();
   private tileUpdatePairs: number[] = [];
-  /** [smallID, tilesOwned, gold, troops] quads — see PlayerImpl.toUpdate. */
+  /** [smallID, tilesOwned, gold, troops] quads Ă˘â‚¬â€ť see PlayerImpl.toUpdate. */
   private playerStatsQuads: number[] = [];
-  /** [smallID, direction, index, troops] quads — see packAttackTroopDeltas. */
+  /** [smallID, direction, index, troops] quads Ă˘â‚¬â€ť see packAttackTroopDeltas. */
   private attackTroopsQuads: number[] = [];
   private motionPlanRecords: MotionPlanRecord[] = [];
   private planDrivenUnitIds = new Set<number>();
@@ -265,6 +292,117 @@ export class GameImpl implements Game {
     return old;
   }
 
+  // --- armies ------------------------------------------------------------
+
+  nextArmyID(): number {
+    const old = this._nextArmyID;
+    this._nextArmyID++;
+    return old;
+  }
+
+  nextFrontID(): number {
+    const old = this._nextFrontID;
+    this._nextFrontID++;
+    return old;
+  }
+
+  armies(): Army[] {
+    return this._armies;
+  }
+
+  armiesOf(player: Player | PlayerID): Army[] {
+    const owner =
+      typeof player === "string" ? this._players.get(player) : player;
+    if (owner === undefined) return [];
+    const smallID = owner.smallID();
+    return this._armies.filter((a) => a.owner().smallID() === smallID);
+  }
+
+  army(id: number): Army | undefined {
+    return this._armyMap.get(id);
+  }
+
+  fronts(): ArmyFront[] {
+    return this._fronts;
+  }
+
+  front(id: number): ArmyFront | undefined {
+    return this._fronts.find((f) => f.id === id);
+  }
+
+  addArmy(army: ArmyImpl): void {
+    this._armyMap.set(army.id(), army);
+    this._armies.push(army);
+  }
+
+  removeArmy(army: ArmyImpl): void {
+    this._armyMap.delete(army.id());
+    const i = this._armies.indexOf(army);
+    if (i !== -1) this._armies.splice(i, 1);
+    const frontId = army.assignedFrontId();
+    if (frontId === null) return;
+    const front = this.front(frontId);
+    if (front === undefined) return;
+    const j = front.armyIDs.indexOf(army.id());
+    if (j !== -1) front.armyIDs.splice(j, 1);
+    // A front with no armies left is not a front: drop it rather than letting
+    // the list grow for the rest of the match.
+    if (front.armyIDs.length === 0) {
+      this._fronts = this._fronts.filter((f) => f !== front);
+    }
+  }
+
+  // --- battle plans -------------------------------------------------------
+
+  nextBattlePlanID(): number {
+    const old = this._nextBattlePlanID;
+    this._nextBattlePlanID++;
+    return old;
+  }
+
+  battlePlans(): BattlePlan[] {
+    return this._battlePlans;
+  }
+
+  battlePlansOf(player: Player | PlayerID): BattlePlan[] {
+    const owner =
+      typeof player === "string" ? this._players.get(player) : player;
+    if (owner === undefined) return [];
+    const smallID = owner.smallID();
+    return this._battlePlans.filter((p) => p.owner().smallID() === smallID);
+  }
+
+  battlePlan(id: number): BattlePlan | undefined {
+    return this._battlePlanMap.get(id);
+  }
+
+  addBattlePlan(plan: BattlePlan): void {
+    this._battlePlanMap.set(plan.id(), plan as BattlePlanImpl);
+    this._battlePlans.push(plan as BattlePlanImpl);
+  }
+
+  /**
+   * Drops a plan. Assigned armies are released back to holding rather than
+   * deleted: a player who cancels a plan is not asking to disband his army.
+   */
+  removeBattlePlan(plan: BattlePlan): void {
+    const impl = plan as BattlePlanImpl;
+    this._battlePlanMap.delete(plan.id());
+    const i = this._battlePlans.indexOf(impl);
+    if (i !== -1) this._battlePlans.splice(i, 1);
+    for (const armyID of impl.armyIDs()) {
+      const army = this._armyMap.get(armyID);
+      if (army === undefined) continue;
+      army.setAssignedBattlePlanId(null);
+      if (army.assignedFrontId() === null) {
+        army.setOrder({ type: "hold" });
+      }
+    }
+    // The tombstone reaches clients on the next plan flush, which is how every
+    // other client drops it without a separate message.
+    this.addUpdate(impl.toRemovalUpdate());
+  }
+
   setFallout(tile: TileRef, value: boolean) {
     if (value && this.hasOwner(tile)) {
       throw Error(`cannot set fallout, tile ${tile} has owner`);
@@ -349,8 +487,8 @@ export class GameImpl implements Game {
       const type = first as UnitType;
       // Single-type query: every nation asks for e.g. all transport ships on
       // every tick, and walking every player's unit list each time was ~3 %
-      // of a headless game. The memo is exact — it is invalidated by any
-      // unit list change — and callers get their own copy.
+      // of a headless game. The memo is exact Ă˘â‚¬â€ť it is invalidated by any
+      // unit list change Ă˘â‚¬â€ť and callers get their own copy.
       const memo = this.unitsByTypeMemo.get(type);
       if (memo !== undefined && memo.version === this._unitsVersion) {
         return memo.units.slice();
@@ -574,6 +712,29 @@ export class GameImpl implements Game {
         hash: this.hash(),
       });
     }
+    // Armies are pushed whole (their panel and marker need the complete
+    // record, and there are far fewer of them than players), on a fixed
+    // cadence rather than on change Ă˘â‚¬â€ť an order or a rename therefore reaches
+    // every client within a couple of ticks.
+    if (
+      this._armies.length > 0 &&
+      this.ticks() % ARMY_UPDATE_INTERVAL_TICKS === 0
+    ) {
+      for (const army of this._armies) {
+        this.addUpdate(army.toUpdate());
+      }
+    }
+    // Plans ride the same cadence for the same reason: a redrawn arrow or a
+    // paused plan should reach every client within a couple of ticks, and there
+    // are never enough plans for the flush to matter.
+    if (
+      this._battlePlans.length > 0 &&
+      this.ticks() % BATTLE_PLAN_UPDATE_INTERVAL_TICKS === 0
+    ) {
+      for (const plan of this._battlePlans) {
+        this.addUpdate(plan.toUpdate());
+      }
+    }
     // Flush pending water conversions + throttled graph rebuild
     const waterChangedTiles = this._waterManager.tick(this._ticks);
     for (const tile of waterChangedTiles) {
@@ -663,6 +824,12 @@ export class GameImpl implements Game {
     this._players.forEach((p) => {
       hash += p.hash();
     });
+    for (const army of this._armies) {
+      hash += army.hash();
+    }
+    for (const plan of this._battlePlans) {
+      hash += plan.hash();
+    }
     return hash;
   }
 
@@ -931,7 +1098,7 @@ export class GameImpl implements Game {
   }
 
   public removeAlliancesByPlayerSilently(player: Player): void {
-    // Snapshot — detachAlliance reassigns the player's _alliances as it goes.
+    // Snapshot Ă˘â‚¬â€ť detachAlliance reassigns the player's _alliances as it goes.
     const removed = [...(player as PlayerImpl)._alliances];
     for (const alliance of removed) {
       // Elimination is the fourth way an alliance ends, and in practice the
@@ -939,7 +1106,7 @@ export class GameImpl implements Game {
       // the null counter is here purely so both sides' longest-held maximum
       // still sees the alliance. Without this the survivor's longest held
       // would silently read 0 from an alliance that ran the whole game, and
-      // recordAlliancesAtEnd cannot pick it up either — by then it is
+      // recordAlliancesAtEnd cannot pick it up either Ă˘â‚¬â€ť by then it is
       // already detached.
       const duration = this._ticks - alliance.createdAt();
       this.stats().allianceEnded(alliance.requestor(), duration, null);
@@ -1162,8 +1329,8 @@ export class GameImpl implements Game {
     this._unitsVersion++;
   }
 
-  // Bumped on every change of tile ownership, fallout or land/water — i.e.
-  // anything Player.nearby() can observe — so per-player answers can be memoised
+  // Bumped on every change of tile ownership, fallout or land/water Ă˘â‚¬â€ť i.e.
+  // anything Player.nearby() can observe Ă˘â‚¬â€ť so per-player answers can be memoised
   // for as long as nothing on the map moved.
   private _territoryVersion = 0;
   territoryVersion(): number {
@@ -1447,8 +1614,12 @@ export class GameImpl implements Game {
       allianceRequests: this.allianceRequests.map((r) => w.allianceRequest(r)),
       nextPlayerID: this.nextPlayerID,
       nextUnitID: this._nextUnitID,
+      nextArmyID: this._nextArmyID,
+      nextFrontID: this._nextFrontID,
+      nextBattlePlanID: this._nextBattlePlanID,
       nextAllianceID: this.nextAllianceID,
       units: [...this._unitMap.values()].map((u) => w.unit(u)),
+      armies: this._armies.map((a) => w.army(a)),
       planDrivenUnitIds: [...this.planDrivenUnitIds],
       unitGrid: this.unitGrid.snapshot((u) => w.unit(u)),
       playerTeams: [...this.playerTeams],
@@ -1462,6 +1633,8 @@ export class GameImpl implements Game {
             : { player: w.player(this._winner) },
       unitsVersion: this._unitsVersion,
       territoryVersion: this._territoryVersion,
+      fronts: this._fronts.map((f) => ({ ...f, armyIDs: [...f.armyIDs] })),
+      battlePlans: this._battlePlans.map((p) => w.battlePlan(p)),
       shipStaggers: { ...this.shipStaggers },
       nationMirvTargets: [...this._nationMirvTargets],
       mirvsLaunched: this._mirvsLaunched,
@@ -1488,6 +1661,29 @@ export class GameImpl implements Game {
    * Applies game-level state to a game constructed with `restoring`, once
    * every player, unit and execution has been restored.
    */
+  /**
+   * Armies restore in table order, which is creation order: the writer seeds
+   * the table from the creation-ordered list. The reader hands back ArmyImpl
+   * shells that have already had their state filled in.
+   */
+  private restoreArmies(ids: number[], r: SnapshotReader): void {
+    const restored = ids.map((i) => r.army(i) as ArmyImpl);
+    this._armyMap = new Map(restored.map((a) => [a.id(), a]));
+    this._armies = restored;
+  }
+
+  /**
+   * Battle plans restore in table order, which is creation order, for the same
+   * reason armies do: the writer seeds the table from the creation-ordered list
+   * and the reader hands back BattlePlanImpl shells whose state and owner have
+   * already been filled in.
+   */
+  private restoreBattlePlans(ids: number[], r: SnapshotReader): void {
+    const restored = ids.map((i) => r.battlePlan(i) as BattlePlanImpl);
+    this._battlePlanMap = new Map(restored.map((p) => [p.id(), p]));
+    this._battlePlans = restored;
+  }
+
   restoreState(s: GameState, r: SnapshotReader): void {
     this._ticks = s.ticks;
     this.startTick = s.startTick;
@@ -1507,6 +1703,15 @@ export class GameImpl implements Game {
     );
     this.planDrivenUnitIds = new Set(s.planDrivenUnitIds);
     this.unitGrid.restoreSnapshot(s.unitGrid, (i) => r.unit(i));
+    this._nextArmyID = s.nextArmyID;
+    this._nextFrontID = s.nextFrontID;
+    this.restoreArmies(s.armies, r);
+    this._fronts = s.fronts.map((f) => ({
+      ...f,
+      armyIDs: [...f.armyIDs],
+    }));
+    this._nextBattlePlanID = s.nextBattlePlanID;
+    this.restoreBattlePlans(s.battlePlans, r);
     this.playerTeams = [...s.playerTeams];
     this.botTeam = s.botTeam;
     this._isPaused = s.isPaused;
@@ -1623,7 +1828,7 @@ export class GameImpl implements Game {
 
 export const GameSnapshot = snapshotType({
   name: "Game",
-  version: 1,
+  version: 3,
   schema: z.object({
     ticks: zInt(),
     startTick: zInt().nullable(),
@@ -1635,8 +1840,12 @@ export const GameSnapshot = snapshotType({
     allianceRequests: z.array(zRef()),
     nextPlayerID: zInt(),
     nextUnitID: zInt(),
+    nextArmyID: zInt(),
+    nextFrontID: zInt(),
+    nextBattlePlanID: zInt(),
     nextAllianceID: zInt(),
     units: z.array(zRef()),
+    armies: z.array(zRef()),
     planDrivenUnitIds: z.array(zInt()),
     unitGrid: z.array(z.array(z.tuple([UnitTypeSchema, z.array(zRef())]))),
     playerTeams: z.array(z.string()),
@@ -1650,6 +1859,15 @@ export const GameSnapshot = snapshotType({
       .nullable(),
     unitsVersion: zInt(),
     territoryVersion: zInt(),
+    fronts: z.array(
+      z.object({
+        id: zInt(),
+        ownerID: zInt(),
+        tile: zTile(),
+        armyIDs: z.array(zInt()),
+      }),
+    ),
+    battlePlans: z.array(zRef()),
     shipStaggers: z.object({ tradeShip: zInt(), transportShip: zInt() }),
     nationMirvTargets: z.array(z.tuple([z.string(), zInt()])),
     mirvsLaunched: zInt(),
@@ -1658,6 +1876,26 @@ export const GameSnapshot = snapshotType({
     sharedWaterCache: VersionedSchema,
     stats: VersionedSchema,
   }),
+  migrations: {
+    // v1 predates armies. A game restored from one has none, and no fronts Ă˘â‚¬â€ť
+    // but its id counters must start at 1 so the first army it does raise does
+    // not reuse an id some older record once had.
+    1: (d: Record<string, unknown>) => ({
+      ...d,
+      nextArmyID: 1,
+      nextFrontID: 1,
+      armies: [],
+      fronts: [],
+    }),
+    // v2 predates battle plans. Same reasoning: no plans, but the allocator
+    // starts at 1 so the first plan raised does not reuse an id some older
+    // record once had.
+    2: (d: Record<string, unknown>) => ({
+      ...d,
+      nextBattlePlanID: 1,
+      battlePlans: [],
+    }),
+  },
 });
 export type GameState = z.infer<typeof GameSnapshot.schema>;
 

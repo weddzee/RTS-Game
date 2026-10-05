@@ -14,7 +14,8 @@
     "railroad": true,
     "fx": true,
     "bar": true,
-    "nameDebug": false
+    "nameDebug": false,
+    "armyMarker": true
   },
   "terrain": {
     "backgroundColor": "#3c3c3c",
@@ -303,6 +304,21 @@
     "duration": 800,
     "converge": 0.7
   },
+  "battlePlan": {
+    "enabled": true,
+    "halfWidthPx": 5.5,
+    "dashPeriodPx": 26,
+    "dashDuty": 0.62,
+    "dashSpeedPx": 34,
+    "toothPeriodTiles": 3.5,
+    "headLengthPx": 22,
+    "headHalfWidthPx": 11,
+    "alpha": 0.72,
+    "activeAlpha": 0.95,
+    "outlineColor": [0.04, 0.04, 0.06],
+    "invalidColor": [1, 0.32, 0.28],
+    "invalidMix": 0.85
+  },
   "samRadius": {
     "strokeWidth": 1.5,
     "dashLen": 12,
@@ -338,6 +354,13 @@
     "animSpeed": 0.008,
     "gradientInnerEdge": 0.01,
     "gradientSolidEnd": 0.1
+  },
+  "armyMarker": {
+    "nearZoom": 4.0,
+    "baseRadius": 0.75,
+    "maxRadiusBonus": 0.75,
+    "stackSpread": 1.0472,
+    "stackSpreadMax": 1.6
   },
   "smallPlayerGlow": {
     "color": [1.0, 0.12, 0.1],

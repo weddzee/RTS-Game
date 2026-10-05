@@ -15,11 +15,18 @@ import { uploadFrameData } from "./render/frame/Upload";
 // Type-only: a value import would pull GPURenderer and its `.glsl?raw` shader
 // imports into any non-Vite consumer (e.g. the Node perf harness).
 import type { MapRenderer, PlayerStatic, SpawnCenter } from "./render/gl";
+// Type-only: the label shape is plain data; importing the value would drag the
+// pass module (and its shaders) into non-Vite consumers.
+import type { AttackTroopLabel } from "./render/gl/passes/WorldTextPass";
 import {
   DEFAULT_NUKE_EXPLOSION_COLOR,
   MAX_NUKE_EXPLOSION_COLORS,
   type NukeExplosionRenderParams,
 } from "./render/types";
+import {
+  type ArmyMarker,
+  packArmyMarkerFlags,
+} from "./render/types/ArmyMarker";
 // Value import from the leaf module (not the ./render/gl barrel) so non-Vite
 // consumers don't pull in GPURenderer and its shaders — see note above.
 import {
@@ -40,7 +47,9 @@ import {
   UT_HYDROGEN_BOMB,
   UT_MIRV_WARHEAD,
 } from "./render/types/UnitType";
+import { renderTroops } from "./Utils";
 import type { GameView, PlayerView } from "./view";
+import type { ArmyView } from "./view/ArmyView";
 
 // A human player counts as "small" (and glows) at or below this fraction of the
 // map; the glow is suppressed for a grace window after the game starts.
@@ -49,6 +58,33 @@ const SMALL_PLAYER_GLOW_GRACE_SECONDS = 60;
 // The set is a visual aid, not tick-critical, so rescan ~once a second
 // (10 ticks) instead of every tick.
 const SMALL_PLAYER_GLOW_RESCAN_TICKS = 10;
+
+// --- Army markers (Prompt 3.6) ---------------------------------------------
+// At or above this device-px-per-tile the marker draws its detail ring and
+// armies get name + strength labels. Below it a marker is just a colored kite.
+const ARMY_MARKER_NEAR_ZOOM = 4.0;
+const ARMY_MARKER_BASE_RADIUS = 0.75;
+const ARMY_MARKER_RADIUS_BONUS = 0.75;
+/** Radians between friendly armies sharing a tile. */
+const ARMY_STACK_SPREAD = 1.0472; // 60 degrees
+const ARMY_STACK_MAX_RADIUS = 1.6;
+/** Strength normalization floor, so a tiny army does not render as a speck. */
+const ARMY_STRENGTH_NORM_FLOOR = 0.08;
+
+/**
+ * Marker size for an army, normalized against its owner's troop ceiling.
+ *
+ * Divided by a log curve rather than the raw ratio: army sizes span four orders
+ * of magnitude over a match, and a linear scale would render every early army as
+ * the minimum marker.
+ */
+function armyStrengthNorm(gameView: GameView, army: ArmyView): number {
+  const owner = gameView.playerBySmallID(army.ownerSmallID());
+  const ceiling = owner.isPlayer() ? owner.state.troops : 0;
+  if (ceiling <= 0) return ARMY_STRENGTH_NORM_FLOOR;
+  const raw = Math.min(1, army.strength() / (ceiling * 0.9));
+  return Math.max(ARMY_STRENGTH_NORM_FLOOR, Math.log10(1 + raw * 99) / 2);
+}
 
 // Attribute → render-param mappings:
 //   size      = the ring's final WIDTH (diameter) in world tiles when it fades
@@ -238,6 +274,7 @@ export class WebGLFrameBuilder {
     this.syncPlayerSpawns(gameView);
     this.syncLocalPlayer(gameView);
     this.syncSpawnOverlay(gameView);
+    this.syncArmyMarkers(gameView);
     this.syncSmallPlayerGlow(gameView);
     this.syncTerrainDeltas(gameView);
     this.syncNukeImpacts(gameView);
@@ -420,6 +457,106 @@ export class WebGLFrameBuilder {
       });
     }
     this.view.updateSpawnOverlay(inSpawnPhase, centers);
+  }
+
+  /**
+   * Army markers and their labels (Prompt 3.6).
+   *
+   * Both levels of detail are decided here rather than in the pass, so the LOD
+   * policy reads in one place:
+   *   - zoomed out: one small kite in the owner color, no text at all.
+   *   - close zoom: the kite gains its detail ring and a status slash, and the
+   *     army's custom name plus its strength get a world-anchored label.
+   *
+   * Friendly armies sharing a tile are fanned out on a small ring rather than
+   * drawn on top of each other. Enemies are never fanned: seeing a pile of
+   * enemy markers is the information.
+   */
+  private syncArmyMarkers(gameView: GameView): void {
+    const armies = gameView.armies();
+    if (armies.length === 0) {
+      this.view.updateArmyMarkers([]);
+      this.view.setArmyLabels([]);
+      return;
+    }
+    const me = gameView.myPlayer();
+    const zoom = this.view.cameraZoom();
+    const isNear = zoom >= ARMY_MARKER_NEAR_ZOOM;
+
+    // Bucket by tile so stacks can be detected without an O(n^2) sweep.
+    const byTile = new Map<number, number[]>();
+    for (let i = 0; i < armies.length; i++) {
+      const tile = armies[i].tile();
+      const bucket = byTile.get(tile);
+      if (bucket === undefined) byTile.set(tile, [i]);
+      else bucket.push(i);
+    }
+
+    const markers: ArmyMarker[] = [];
+    const labels: AttackTroopLabel[] = [];
+
+    for (let i = 0; i < armies.length; i++) {
+      const army = armies[i];
+      const owner = gameView.playerBySmallID(army.ownerSmallID());
+      const color = owner.isPlayer() ? owner.territoryColor().toRgb() : null;
+      const r = color === null ? 1 : color.r / 255;
+      const g = color === null ? 0.6 : color.g / 255;
+      const b = color === null ? 0.2 : color.b / 255;
+
+      const isOwn = me !== null && army.ownerSmallID() === me.smallID();
+      const isFriendly =
+        isOwn || (me !== null && owner.isPlayer() && me.isFriendly(owner));
+
+      // Fan out friendly stacks; a lone army does not move at all.
+      const stack = byTile.get(army.tile())!;
+      let x = gameView.x(army.tile()) + 0.5;
+      let y = gameView.y(army.tile()) + 0.5;
+      if (stack.length > 1 && isFriendly) {
+        const angle =
+          (ARMY_STACK_SPREAD * (i - stack.indexOf(i)) * (Math.PI * 2)) /
+          Math.max(stack.length, 2);
+        const radius = Math.min(ARMY_STACK_MAX_RADIUS, stack.length * 0.25);
+        x += Math.cos(angle) * radius;
+        y += Math.sin(angle) * radius;
+      }
+
+      markers.push({
+        x,
+        y,
+        sizeTiles:
+          ARMY_MARKER_BASE_RADIUS +
+          ARMY_MARKER_RADIUS_BONUS * armyStrengthNorm(gameView, army),
+        flags: packArmyMarkerFlags({
+          isOwn,
+          isFriendly,
+          isSelected: gameView.selectedArmyId() === army.id,
+          isMoving: army.movementState() === "moving",
+          isEngaging: army.movementState() === "engaging",
+          isAttacking: army.combatState() === "attacking",
+          isNear,
+        }),
+        r,
+        g,
+        b,
+      });
+
+      // The custom name is the point of the whole system, so it is what shows
+      // at close zoom — ahead of the strength, which the kite size already
+      // conveys.
+      if (isNear && isFriendly) {
+        labels.push({
+          x,
+          y,
+          text: `${army.name()} ${renderTroops(army.strength())}`,
+          colorR: r,
+          colorG: g,
+          colorB: b,
+        });
+      }
+    }
+
+    this.view.updateArmyMarkers(markers);
+    this.view.setArmyLabels(labels);
   }
 
   /**

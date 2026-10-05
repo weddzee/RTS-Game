@@ -3,6 +3,14 @@ import { PlayerView } from "../../client/view";
 import { AssetManifest } from "../AssetUrls";
 import { ClusterConfig } from "../ClusterConfig";
 import { exp, log, pow, pow2 } from "../DetMath";
+import {
+  escalatedAttackerLoss,
+  escalatedConquestCost,
+  escalatedDefenderLoss,
+  escalatedFortificationBonus,
+  escalatedFortificationSpeed,
+  escalatedProduction,
+} from "../Escalation";
 import { DoomsdayClockSpeed } from "../game/DoomsdayClock";
 import {
   Difficulty,
@@ -23,6 +31,11 @@ import { UserSettings } from "../game/UserSettings";
 import { GameConfig, TeamCountConfig } from "../Schemas";
 import { NukeType } from "../StatsSchemas";
 import { assertNever, sigmoid, toInt, within } from "../Util";
+import {
+  ARMY_DEFAULT_CAP,
+  ARMY_MAX_SHARE_OF_TROOPS,
+  ARMY_MIN_STRENGTH,
+} from "./ArmyBalance";
 
 declare global {
   interface Window {
@@ -88,6 +101,20 @@ export function parseGameEnv(value: string | undefined): GameEnv {
   }
 }
 
+/**
+ * Per-army adjustments to the per-tile combat math, all on a 100 = neutral
+ * scale (Prompt 3.3). Absent for an ordinary player attack, which must resolve
+ * exactly as it did before armies existed.
+ */
+export interface ArmyAttackModifiers {
+  /** Divisor on the attacker's troop loss per tile. Above 100 bleeds less. */
+  lossDivisor: number;
+  /** Multiplier on the defender's troop loss. Offensive damage. */
+  defenderLossMultiplier: number;
+  /** Multiplier on a tile's conquest cost. Breakthrough; above 100 is faster. */
+  conquestCostMultiplier: number;
+}
+
 export interface AttackLogicInput {
   terrain: TerrainType;
   attackTroops: number;
@@ -107,6 +134,11 @@ export interface AttackLogicInput {
   falloutRatio: number | null;
   /** Tiles on the attack front this tick (plus jitter); fixed for the tick. */
   borderSize: number;
+  /** Late-game escalation level (Prompt 2). Defaults to 0 (no pressure):
+   * callers that simulate overtime play pass escalationLevelForGame. */
+  escalationLevel?: number;
+  /** Present only when an army is making this attack (Prompt 3.3). */
+  attackerModifiers?: ArmyAttackModifiers;
 }
 
 export interface AttackLogicResult {
@@ -847,6 +879,45 @@ export class Config {
   armyLimitWarningThreshold(): number {
     return 0.8;
   }
+
+  // --- Armies (Prompt 3.4) -----------------------------------------------
+  //
+  // Every number here is a gate the CreateArmyExecution checks before it moves
+  // a single troop. The tuning values live in ./ArmyBalance; only the
+  // player-type adjustments belong here, next to the rest of Config's
+  // per-player-type policy.
+
+  /** Armies one player may field at once. */
+  maxArmyCount(player: Player | PlayerView): number {
+    // Bots and nations never split their force — they stay on the single
+    // AiAttackBehavior attack loop — so they get half the human cap.
+    if (
+      player.type() === PlayerType.Bot ||
+      player.type() === PlayerType.Nation
+    ) {
+      return Math.max(1, Math.floor(ARMY_DEFAULT_CAP / 2));
+    }
+    return ARMY_DEFAULT_CAP;
+  }
+
+  /** Smallest troop count an army may be raised with. */
+  minArmyStrength(): number {
+    return ARMY_MIN_STRENGTH;
+  }
+
+  /**
+   * Ceiling for a single army, as a share of the owner's current troop pool.
+   * Leaves the player a reserve, so one army can never be the whole army.
+   */
+  maxArmyStrength(player: Player | PlayerView): number {
+    return Math.floor((player.troops() * ARMY_MAX_SHARE_OF_TROOPS) / 100);
+  }
+
+  /** Troops one reinforce order may pull in, share-capped the same way. */
+  maxReinforceAmount(player: Player | PlayerView): number {
+    return Math.floor((player.troops() * ARMY_MAX_SHARE_OF_TROOPS) / 100);
+  }
+
   boatMaxNumber(): number {
     if (this.isUnitDisabled(UnitType.TransportShip)) {
       return 0;
@@ -882,15 +953,32 @@ export class Config {
   attackLogic(input: AttackLogicInput): AttackLogicResult {
     const { attackTroops, attacker, defender } = input;
     let { mag, tileCost } = terrainAttackBase(input.terrain);
+    const esc = input.escalationLevel ?? 0;
 
     if (defender !== null && input.defenderHasDefensePost) {
-      mag *= this.defensePostDefenseBonus();
-      tileCost *= this.defensePostSpeedBonus();
+      // Fortifications fade under escalation (bounded decay in Balance).
+      mag *= escalatedFortificationBonus(this.defensePostDefenseBonus(), esc);
+      tileCost *= escalatedFortificationSpeed(
+        this.defensePostSpeedBonus(),
+        esc,
+      );
     }
     if (input.falloutRatio !== null) {
       const fallout = this.falloutDefenseModifier(input.falloutRatio);
       mag *= fallout;
       tileCost *= fallout;
+    }
+    if (esc > 0) {
+      // Late-game pressure: attackers lose less and push faster.
+      mag = escalatedAttackerLoss(mag, esc);
+      tileCost = escalatedConquestCost(tileCost, esc);
+    }
+    // Army composition and veterancy (Prompt 3.3), applied before the
+    // defender branch so they scale both the loss figures and the speed.
+    const armyMods = input.attackerModifiers;
+    if (armyMods !== undefined) {
+      mag /= armyMods.lossDivisor;
+      tileCost /= armyMods.conquestCostMultiplier / 100;
     }
 
     if (defender === null) {
@@ -933,8 +1021,16 @@ export class Config {
     const traitorLossMod = defender.isTraitor ? this.traitorDefenseDebuff() : 1;
     const traitorCostMod = defender.isTraitor ? this.traitorSpeedDebuff() : 1;
 
-    // Defender loses its average troops-per-tile.
-    const defenderTroopLoss = defender.troops / defender.numTiles;
+    // Defender loses its average troops-per-tile, scaled up under
+    // escalation (late-game pressure cuts both ways) and by the attacking
+    // army's offensive damage when there is one.
+    let defenderTroopLoss = escalatedDefenderLoss(
+      defender.troops / defender.numTiles,
+      esc,
+    );
+    if (armyMods !== undefined) {
+      defenderTroopLoss *= armyMods.defenderLossMultiplier / 100;
+    }
 
     // Two ratios drive the attacker's loss: how outnumbered the attack is
     // (defender army / attack stack, clamped: bigger pushes pay less per
@@ -1055,7 +1151,10 @@ export class Config {
     }
   }
 
-  troopIncreaseRate(player: Player | PlayerView): number {
+  troopIncreaseRate(
+    player: Player | PlayerView,
+    escalationLevel: number = 0,
+  ): number {
     const max = this.maxTroops(player);
 
     let toAdd = 10 + pow(player.troops(), 0.73) / 4;
@@ -1086,10 +1185,16 @@ export class Config {
       }
     }
 
+    // Late-game pressure accelerates production (bounded in Balance).
+    toAdd = escalatedProduction(toAdd, escalationLevel);
+
     return Math.min(player.troops() + toAdd, max) - player.troops();
   }
 
-  goldAdditionRate(player: Player | PlayerView): Gold {
+  goldAdditionRate(
+    player: Player | PlayerView,
+    escalationLevel: number = 0,
+  ): Gold {
     const multiplier = this.goldMultiplierFor(player);
     let baseRate: bigint;
     if (player.type() === PlayerType.Bot) {
@@ -1097,7 +1202,11 @@ export class Config {
     } else {
       baseRate = 100n;
     }
-    return BigInt(Math.floor(Number(baseRate) * multiplier));
+    const scaled = escalatedProduction(
+      Number(baseRate) * multiplier,
+      escalationLevel,
+    );
+    return BigInt(Math.floor(scaled));
   }
 
   nukeMagnitudes(unitType: UnitType): NukeMagnitude {

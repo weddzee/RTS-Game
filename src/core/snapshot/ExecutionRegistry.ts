@@ -3,7 +3,15 @@ import { AllianceExtensionExecutionSnapshot } from "../execution/alliance/Allian
 import { AllianceRejectExecutionSnapshot } from "../execution/alliance/AllianceRejectExecution";
 import { AllianceRequestExecutionSnapshot } from "../execution/alliance/AllianceRequestExecution";
 import { BreakAllianceExecutionSnapshot } from "../execution/alliance/BreakAllianceExecution";
+import { ArmyExecutionSnapshot } from "../execution/army/ArmyExecution";
+import { ArmyOrderExecutionSnapshot } from "../execution/army/ArmyOrderExecution";
+import { CreateArmyExecutionSnapshot } from "../execution/army/CreateArmyExecution";
+import { RenameArmyExecutionSnapshot } from "../execution/army/RenameArmyExecution";
+import { SetArmyCompositionExecutionSnapshot } from "../execution/army/SetArmyCompositionExecution";
 import { AttackExecutionSnapshot } from "../execution/AttackExecution";
+import { BattlePlanExecutionSnapshot } from "../execution/battleplan/BattlePlanExecution";
+import { CreateBattlePlanExecutionSnapshot } from "../execution/battleplan/CreateBattlePlanExecution";
+import { EditBattlePlanExecutionSnapshot } from "../execution/battleplan/EditBattlePlanExecution";
 import { BoatRetreatExecutionSnapshot } from "../execution/BoatRetreatExecution";
 import { CityExecutionSnapshot } from "../execution/CityExecution";
 import { ConstructionExecutionSnapshot } from "../execution/ConstructionExecution";
@@ -57,13 +65,19 @@ export const EXECUTION_SNAPSHOT_TYPES = [
   AllianceRejectExecutionSnapshot,
   AllianceRequestExecutionSnapshot,
   AttackExecutionSnapshot,
+  ArmyExecutionSnapshot,
+  BattlePlanExecutionSnapshot,
+  ArmyOrderExecutionSnapshot,
   BoatRetreatExecutionSnapshot,
   BreakAllianceExecutionSnapshot,
   CityExecutionSnapshot,
   ConstructionExecutionSnapshot,
+  CreateArmyExecutionSnapshot,
+  CreateBattlePlanExecutionSnapshot,
   DefensePostExecutionSnapshot,
   DeleteUnitExecutionSnapshot,
   DonateGoldExecutionSnapshot,
+  EditBattlePlanExecutionSnapshot,
   DonateTroopsExecutionSnapshot,
   DoomsdayClockExecutionSnapshot,
   EmbargoAllExecutionSnapshot,
@@ -82,9 +96,11 @@ export const EXECUTION_SNAPSHOT_TYPES = [
   PortExecutionSnapshot,
   QuickChatExecutionSnapshot,
   RecomputeRailClusterExecutionSnapshot,
+  RenameArmyExecutionSnapshot,
   RetreatExecutionSnapshot,
   SAMLauncherExecutionSnapshot,
   SAMMissileExecutionSnapshot,
+  SetArmyCompositionExecutionSnapshot,
   ShellExecutionSnapshot,
   SpawnExecutionSnapshot,
   SpawnTimerExecutionSnapshot,

@@ -1,5 +1,5 @@
-/**
- * MapRenderer — public facade for the WebGL map renderer.
+﻿/**
+ * MapRenderer â€” public facade for the WebGL map renderer.
  *
  * Wraps GPURenderer as a private implementation detail and survives WebGL
  * context loss: when the context is lost the renderer is disposed, and on
@@ -8,7 +8,7 @@
  *
  * This is a pure data sink. Input handling lives in InputHandler/EventBus;
  * camera state is pushed in each frame via setCameraState. Consumers only
- * touch MapRenderer — they never import GPURenderer or Camera.
+ * touch MapRenderer â€” they never import GPURenderer or Camera.
  */
 
 import type { Config } from "../../../core/configuration/Config";
@@ -30,6 +30,8 @@ import type {
   TerrainRect,
   UnitState,
 } from "../types";
+import type { ArmyMarker } from "../types/ArmyMarker";
+import type { BattlePlanStroke } from "../types/BattlePlan";
 import type { SpawnCenter } from "./passes/SpawnOverlayPass";
 import type { AttackTroopLabel } from "./passes/WorldTextPass";
 import { GPURenderer } from "./Renderer";
@@ -56,7 +58,7 @@ export class MapRenderer {
   constructor(
     private canvas: HTMLCanvasElement,
     private header: RendererConfig,
-    // Called (not stored) whenever terrain bytes are needed — initial bake
+    // Called (not stored) whenever terrain bytes are needed â€” initial bake
     // and every context restore. Regenerating on demand avoids retaining a
     // map-sized buffer for the rare restore path.
     private terrainSource: () => Uint8Array,
@@ -135,7 +137,7 @@ export class MapRenderer {
   /**
    * Set when the context is hardware-accelerated but its MAX_TEXTURE_SIZE is
    * below what the game needs (fingerprinting protection, #4357). The game
-   * runs, but the map may render with black areas — the owner should warn.
+   * runs, but the map may render with black areas â€” the owner should warn.
    */
   get glLimited(): { renderer: string; maxTextureSize: number } | null {
     return this.renderer?.glLimited ?? null;
@@ -240,6 +242,11 @@ export class MapRenderer {
   setAttackTroopLabels(labels: AttackTroopLabel[]): void {
     this.renderer?.setAttackTroopLabels(labels);
   }
+
+  /** Army name/strength labels (Prompt 3.6). Empty array clears them. */
+  setArmyLabels(labels: AttackTroopLabel[]): void {
+    this.renderer?.setArmyLabels(labels);
+  }
   applyBonusEvents(events: BonusEvent[]): void {
     this.renderer?.applyBonusEvents(events);
   }
@@ -293,6 +300,33 @@ export class MapRenderer {
     this.renderer?.updateSmallPlayerGlow(set);
   }
 
+  /** Replace the army markers (Prompt 3.6). Empty array turns the pass off. */
+  updateArmyMarkers(markers: ArmyMarker[]): void {
+    this.renderer?.updateArmyMarkers(markers);
+  }
+
+  /**
+   * Replace the drawn battle plans (Prompt 4.3). Empty array turns the pass off.
+   *
+   * A pure data sink like everything else here: the controller decides what is
+   * being drawn, this only knows how to hand it over.
+   */
+  updateBattlePlanStrokes(strokes: BattlePlanStroke[]): void {
+    this.renderer?.updateBattlePlanStrokes(strokes);
+  }
+
+  /** Resting and active plan opacity, straight from the render settings. */
+  battlePlanAlphas(): { alpha: number; activeAlpha: number } {
+    return (
+      this.renderer?.battlePlanAlphas() ?? { alpha: 0.7, activeAlpha: 0.95 }
+    );
+  }
+
+  /** Device px per world tile â€” see GPURenderer.cameraZoom. */
+  cameraZoom(): number {
+    return this.renderer?.cameraZoom() ?? 1;
+  }
+
   // ---- Map layers ----
 
   /** Set up map-layer passes from the loaded layer data. */
@@ -313,7 +347,7 @@ export class MapRenderer {
     this.renderer?.setLayerVisible(layerId, visible);
   }
 
-  /** Set the alpha multiplier for a single map layer (0–1). */
+  /** Set the alpha multiplier for a single map layer (0â€“1). */
   setLayerAlpha(layerId: string, alpha: number): void {
     this.layerAlpha.set(layerId, alpha);
     this.renderer?.setLayerAlpha(layerId, alpha);
@@ -366,7 +400,7 @@ export class MapRenderer {
   setLocalPlayerID(id: number): void {
     this.renderer?.setLocalPlayerID(id);
   }
-  /** Rail color for the local player (0–1 RGB). */
+  /** Rail color for the local player (0â€“1 RGB). */
   setLocalRailColor(r: number, g: number, b: number): void {
     this.renderer?.setLocalRailColor(r, g, b);
   }

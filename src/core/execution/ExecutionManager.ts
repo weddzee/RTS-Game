@@ -1,4 +1,4 @@
-import { Execution, Game } from "../game/Game";
+import { Execution, Game, Player } from "../game/Game";
 import { PseudoRandom } from "../PseudoRandom";
 import { ClientID, GameID, StampedIntent, Turn } from "../Schemas";
 import { simpleHash } from "../Util";
@@ -6,6 +6,12 @@ import { AllianceExtensionExecution } from "./alliance/AllianceExtensionExecutio
 import { AllianceRejectExecution } from "./alliance/AllianceRejectExecution";
 import { AllianceRequestExecution } from "./alliance/AllianceRequestExecution";
 import { BreakAllianceExecution } from "./alliance/BreakAllianceExecution";
+import { ArmyOrderExecution } from "./army/ArmyOrderExecution";
+import { CreateArmyExecution } from "./army/CreateArmyExecution";
+import { RenameArmyExecution } from "./army/RenameArmyExecution";
+import { SetArmyCompositionExecution } from "./army/SetArmyCompositionExecution";
+import { CreateBattlePlanExecution } from "./battleplan/CreateBattlePlanExecution";
+import { EditBattlePlanExecution } from "./battleplan/EditBattlePlanExecution";
 import { AttackExecution } from "./AttackExecution";
 import { BoatRetreatExecution } from "./BoatRetreatExecution";
 import { ConstructionExecution } from "./ConstructionExecution";
@@ -139,8 +145,71 @@ export class Executor {
         return new MarkDisconnectedExecution(player, intent.isDisconnected);
       case "toggle_pause":
         return new PauseExecution(player, intent.paused);
+      case "create_army":
+        return new CreateArmyExecution(
+          player,
+          intent.tile,
+          intent.troops,
+          intent.name,
+          intent.composition,
+        );
+      case "rename_army":
+        return new RenameArmyExecution(player, intent.armyId, intent.name);
+      case "set_army_composition":
+        return new SetArmyCompositionExecution(
+          player,
+          intent.armyId,
+          intent.composition,
+        );
+      case "army_order":
+        return new ArmyOrderExecution(player, intent.armyId, intent.order);
+      case "battle_plan":
+        return this.createBattlePlan(player, intent.action);
       default:
         throw new Error(`intent type ${intent} not found`);
+    }
+  }
+
+  /**
+   * The battle-plan intent is one envelope around six operations, so the
+   * dispatch is a switch on the action rather than another arm in createExec.
+   * Validation of *what* was asked for happens in the executions; deciding which
+   * execution to build happens here.
+   */
+  private createBattlePlan(
+    player: Player,
+    action: Extract<StampedIntent, { type: "battle_plan" }>["action"],
+  ): Execution {
+    switch (action.type) {
+      case "create":
+      case "redraw":
+        return action.type === "create"
+          ? new CreateBattlePlanExecution(player, {
+              kind: action.kind,
+              frontier: action.frontier,
+              route: action.route,
+              armyIDs: action.armyIDs,
+            })
+          : new EditBattlePlanExecution(
+              player,
+              action.planId,
+              "redraw",
+              action.armyIDs,
+              action.frontier,
+              action.route,
+              action.kind,
+            );
+      case "reassign":
+        return new EditBattlePlanExecution(
+          player,
+          action.planId,
+          "reassign",
+          action.armyIDs,
+        );
+      case "pause":
+      case "resume":
+      case "delete":
+        return new EditBattlePlanExecution(player, action.planId, action.type);
     }
   }
 

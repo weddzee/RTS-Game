@@ -47,6 +47,13 @@ const GHOST_COST_OUTLINE_WIDTH = 1.4;
  */
 const ATTACK_LABEL_SCREEN_SCALE = 17.0;
 const ATTACK_LABEL_OUTLINE_WIDTH = 1.2;
+/**
+ * Army labels (Prompt 3.6) sit slightly smaller than attack-troop callouts and
+ * a fixed number of screen pixels above their marker, so an army reads as
+ * "name 12.4k" hovering over the kite.
+ */
+const ARMY_LABEL_SCREEN_SCALE = 14.0;
+const ARMY_LABEL_SCREEN_OFFSET = 22;
 
 // ---------------------------------------------------------------------------
 // Active popup tracking
@@ -140,6 +147,13 @@ export class WorldTextPass {
   // Persistent attack-troop labels. Controller pushes the full list each frame
   // (already interpolated), so we just iterate and render.
   private attackTroopLabels: AttackTroopLabel[] = [];
+
+  /**
+   * Army name + strength labels (Prompt 3.6), pushed once per tick. Only
+   * emitted at close zoom by whoever builds the list, so the pass has no zoom
+   * logic of its own — same contract as the attack-troop labels.
+   */
+  private armyLabels: AttackTroopLabel[] = [];
 
   // Settings reference
   private settings: RenderSettings;
@@ -375,6 +389,14 @@ export class WorldTextPass {
     this.attackTroopLabels = labels;
   }
 
+  /**
+   * Replace the army name/strength labels. Emitted only for armies inside the
+   * close-zoom band; an empty array clears them.
+   */
+  setArmyLabels(labels: AttackTroopLabel[]): void {
+    this.armyLabels = labels;
+  }
+
   // -------------------------------------------------------------------------
   // Tick — cull expired, rebuild instance buffer
   // -------------------------------------------------------------------------
@@ -383,7 +405,8 @@ export class WorldTextPass {
     if (
       this.active.length === 0 &&
       this.ghostCostLabel === null &&
-      this.attackTroopLabels.length === 0
+      this.attackTroopLabels.length === 0 &&
+      this.armyLabels.length === 0
     ) {
       this.instanceCount = 0;
       return;
@@ -406,6 +429,7 @@ export class WorldTextPass {
     // canvasW in Camera is cssWidth*dpr, so `zoom` is device-px-per-world-unit.
     // Multiply screen-relative scales by dpr to keep a constant CSS-pixel size.
     const dpr = renderDpr();
+    const invZoom = 1 / Math.max(zoom, 0.0001);
 
     for (const popup of this.active) {
       const elapsed = now - popup.startMs;
@@ -481,13 +505,45 @@ export class WorldTextPass {
       }
     }
 
+    // Army name + strength labels (Prompt 3.6). One string per label, centered on
+    // the marker and lifted a fixed on-screen distance above it, so an army
+    // reads as "name + 12.4k" without needing a second pass or a font atlas
+    // per marker.
+    const armyScale = (ARMY_LABEL_SCREEN_SCALE * dpr) / Math.max(zoom, 0.0001);
+    for (const army of this.armyLabels) {
+      layoutString(
+        army.text,
+        this.glyph,
+        this.kernTable,
+        this.charCodes,
+        this.cursors,
+      );
+      const len = Math.min(army.text.length, MAX_CHARS);
+      for (let i = 0; i < len; i++) {
+        if (this.charCodes[i] === 0) continue;
+        if (count >= this.maxInstances) this.growBuffer();
+        const off = count * FLOATS_PER_INSTANCE;
+        this.instanceData[off + 0] = army.x;
+        this.instanceData[off + 1] =
+          army.y - ARMY_LABEL_SCREEN_OFFSET * dpr * invZoom;
+        this.instanceData[off + 2] = this.cursors[i];
+        this.instanceData[off + 3] = this.charCodes[i];
+        this.instanceData[off + 4] = 1;
+        this.instanceData[off + 5] = army.colorR;
+        this.instanceData[off + 6] = army.colorG;
+        this.instanceData[off + 7] = army.colorB;
+        this.instanceData[off + 8] = armyScale;
+        this.instanceData[off + 9] = ATTACK_LABEL_OUTLINE_WIDTH;
+        count++;
+      }
+    }
+
     // Ghost cost label — persistent, no fade or rise. layoutString already
     // centers cursors around 0, so passing the tile coord places the text
     // centered on the tile (vertex shader adds the +0.5 tile-center offset).
     // Scale is divided by zoom so the chip keeps a constant on-screen size.
     const label = this.ghostCostLabel;
     if (label) {
-      const invZoom = 1 / Math.max(zoom, 0.0001);
       const ghostScale = this.settings.ghostCost.screenScale * dpr * invZoom;
       const ghostY =
         label.y + this.settings.ghostCost.screenYOffset * dpr * invZoom;

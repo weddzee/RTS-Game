@@ -7,6 +7,9 @@ import {
   isTerminalClose,
 } from "../core/CloseCodes";
 import { EventBus, EventConstructor, GameEvent } from "../core/EventBus";
+import type { ArmyOrder } from "../core/game/Army";
+import type { BattlePlanOrder } from "../core/game/BattlePlan";
+import type { ArmyComposition } from "../core/game/ArmyComposition";
 import {
   AllPlayers,
   GameType,
@@ -208,6 +211,78 @@ export class MoveWarshipIntentEvent implements GameEvent {
   ) {}
 }
 
+// --- Armies (Prompt 3) ---------------------------------------------------
+//
+// The client sends requests, never results. Every one of these is re-validated
+// in the simulation (see execution/army/), so a tampered client gets a
+// different outcome on every peer — not an advantage.
+
+export class CreateArmyIntentEvent implements GameEvent {
+  constructor(
+    public readonly tile: number,
+    public readonly troops: number,
+    public readonly name: string | null,
+    public readonly composition: ArmyComposition | null,
+  ) {}
+}
+
+export class RenameArmyIntentEvent implements GameEvent {
+  constructor(
+    public readonly armyId: number,
+    public readonly name: string,
+  ) {}
+}
+
+export class SetArmyCompositionIntentEvent implements GameEvent {
+  constructor(
+    public readonly armyId: number,
+    public readonly composition: ArmyComposition,
+  ) {}
+}
+
+export class ArmyOrderIntentEvent implements GameEvent {
+  constructor(
+    public readonly armyId: number,
+    public readonly order: ArmyOrder,
+  ) {}
+}
+
+/**
+ * A drawn or edited battle plan (Prompt 4.10).
+ *
+ * One event for the whole feature because there is exactly one moment anything
+ * is sent: the client never emits this while the pointer is moving. Drawing is
+ * cosmetic and local until release, at which point the gesture has already been
+ * simplified to tiles — so what crosses the wire is a small, already-processed
+ * proposal, never a stream of mouse positions.
+ *
+ * `action` is the discriminated union the schema expects; the panel sends a
+ * `pause`/`resume`/`delete`/`reassign` directly and only `create` ever carries
+ * geometry.
+ */
+export class BattlePlanIntentEvent implements GameEvent {
+  constructor(
+    public readonly action:
+      | {
+          type: "create";
+          kind: BattlePlanOrder;
+          frontier: number[];
+          route: number[];
+          armyIDs: number[];
+        }
+      | {
+          type: "redraw";
+          planId: number;
+          kind: BattlePlanOrder;
+          frontier: number[];
+          route: number[];
+          armyIDs: number[];
+        }
+      | { type: "pause" | "resume" | "delete"; planId: number }
+      | { type: "reassign"; planId: number; armyIDs: number[] },
+  ) {}
+}
+
 export class SendKickPlayerIntentEvent implements GameEvent {
   constructor(public readonly target: string) {}
 }
@@ -358,6 +433,46 @@ export class Transport {
     this.subscribe(SendToggleGameStartTimer, (e) =>
       this.onSendToggleGameStartTimer(e),
     );
+
+    // Armies (Prompt 3). Thin adapters: the payload is already the wire shape,
+    // so there is nothing to validate here — the executions own that.
+    this.subscribe(CreateArmyIntentEvent, (e) =>
+      this.sendIntent({
+        type: "create_army",
+        tile: e.tile,
+        troops: e.troops,
+        name: e.name,
+        composition: e.composition,
+      }),
+    );
+    this.subscribe(RenameArmyIntentEvent, (e) =>
+      this.sendIntent({
+        type: "rename_army",
+        armyId: e.armyId,
+        name: e.name,
+      }),
+    );
+    this.subscribe(SetArmyCompositionIntentEvent, (e) =>
+      this.sendIntent({
+        type: "set_army_composition",
+        armyId: e.armyId,
+        composition: e.composition,
+      }),
+    );
+    this.subscribe(ArmyOrderIntentEvent, (e) =>
+      this.sendIntent({
+        type: "army_order",
+        armyId: e.armyId,
+        order: e.order,
+      }),
+    );
+    this.subscribe(BattlePlanIntentEvent, (e) =>
+      this.sendIntent({
+        type: "battle_plan",
+        action: e.action,
+      }),
+    );
+
     this.subscribe(SendSpectateEvent, (e) => {
       this.lobbyConfig.spectator = e.spectator;
       this.sendMsg({

@@ -156,6 +156,21 @@ export function scriptedTurn(game: Game): Turn {
       ? (spawnIntent(game, p, tick) ?? queuedIntent(game, p, tick))
       : playIntent(game, p, rand);
     if (intent !== null) intents.push({ ...intent, clientID } as StampedIntent);
+
+    // Battle plans ride alongside the main intent rather than competing with it
+    // for the same slot. They cost no troops and no gold, so letting them queue
+    // up behind an economy action cannot starve the trade ships, SAMs and
+    // artillery the other half of this test is relying on.
+    if (!game.inSpawnPhase() && p.isAlive() && p.hasSpawned()) {
+      const planIntent = playBattlePlanIntent(
+        game,
+        p,
+        new PseudoRandom(game.ticks() * 15_486_317 + p.smallID()),
+      );
+      if (planIntent !== null) {
+        intents.push({ ...planIntent, clientID } as StampedIntent);
+      }
+    }
   }
   if (tick === 21) {
     // From a client that is not in the game: becomes a NoOpExecution.
@@ -225,6 +240,23 @@ function queuedIntent(game: Game, p: Player, tick: number): Intent | null {
     },
     { type: "mark_disconnected", isDisconnected: false },
     { type: "toggle_pause", paused: false },
+    // Armies (Prompt 3): raise one, name it, compose it, order it. All four
+    // executions finish inside the tick they start, so like the rest of this
+    // list they are only reachable from the spawn-phase pending list.
+    {
+      type: "create_army",
+      tile: p.spawnTile() ?? 0,
+      troops: 500,
+      name: "1st Army",
+      composition: { infantry: 60, armor: 20, artillery: 15, support: 5 },
+    },
+    { type: "rename_army", armyId: 1, name: "Renamed Army" },
+    {
+      type: "set_army_composition",
+      armyId: 1,
+      composition: { infantry: 40, armor: 40, artillery: 10, support: 10 },
+    },
+    { type: "army_order", armyId: 1, order: { type: "hold" } },
   ];
   return queued[(tick - 20) / 2] ?? null;
 }
@@ -250,6 +282,13 @@ function pick<T>(rand: PseudoRandom, arr: readonly T[]): T | null {
   return arr.length === 0 ? null : arr[rand.nextInt(0, arr.length)];
 }
 
+/** 8-neighbours of a tile as an array; the buffer form leaks a length. */
+function around(game: Game, tile: TileRef): TileRef[] {
+  const buf: TileRef[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  const n = game.neighbors8(tile, buf);
+  return buf.slice(0, n);
+}
+
 function randomOwnedTile(rand: PseudoRandom, p: Player): TileRef | null {
   const n = p.numTilesOwned();
   if (n === 0) return null;
@@ -259,6 +298,76 @@ function randomOwnedTile(rand: PseudoRandom, p: Player): TileRef | null {
     if (i++ === k) return t;
   }
   return null;
+}
+
+/**
+ * A run of consecutive tiles from the player's own border, as if the pointer
+ * had been dragged along it. Empty when the player has no border to draw on,
+ * which is the case before anyone has taken anything.
+ */
+function drawnFrontier(rand: PseudoRandom, p: Player, game: Game): TileRef[] {
+  const borders: TileRef[] = [];
+  for (const t of p.borderTiles()) {
+    if (game.isLand(t) && !game.isImpassable(t)) borders.push(t);
+  }
+  if (borders.length === 0) return [];
+  const start = pick(rand, borders)!;
+  const run = [start];
+  let current = start;
+  for (let i = 0; i < 6; i++) {
+    const options: TileRef[] = [];
+    for (const n of around(game, current)) {
+      if (game.owner(n) !== p) continue;
+      if (run.includes(n)) continue;
+      options.push(n);
+    }
+    if (options.length === 0) break;
+    current = options[rand.nextInt(0, options.length)];
+    run.push(current);
+  }
+  return run;
+}
+
+/**
+ * A straight arrow out of the drawn front: the drawn frontier's first tile, then
+ * a few steps in the direction the border faces. Not a legal route — that is the
+ * point. It is exactly the kind of gesture a player makes, and the reference
+ * game proves the simulation turns it into something legal.
+ */
+function drawnArrow(
+  rand: PseudoRandom,
+  game: Game,
+  frontier: readonly TileRef[],
+): TileRef[] {
+  if (frontier.length === 0) return [];
+  const anchor = frontier[0];
+  const ax = game.x(anchor);
+  const ay = game.y(anchor);
+  // Face the open side: the first neighbour direction that is not ours.
+  let dx = 1;
+  let dy = 0;
+  for (const n of around(game, anchor)) {
+    if (game.owner(n) === game.owner(anchor)) continue;
+    dx = game.x(n) - ax;
+    dy = game.y(n) - ay;
+    break;
+  }
+  const out: TileRef[] = [];
+  for (let step = 1; step <= 12; step++) {
+    const x = ax + dx * step;
+    const y = ay + dy * step;
+    if (!game.isValidCoord(x, y)) break;
+    out.push(game.ref(x, y));
+  }
+  // A sideways wobble, so simplification and smoothing are exercised rather than
+  // handed a perfectly straight line.
+  if (out.length > 3) {
+    const i = rand.nextInt(1, out.length - 1);
+    const t = out[i];
+    const x = game.x(t) + (rand.chance(2) ? 1 : -1);
+    if (game.isValidCoord(x, game.y(t))) out[i] = game.ref(x, game.y(t));
+  }
+  return out;
 }
 
 const STRUCTURES = [
@@ -272,6 +381,20 @@ const STRUCTURES = [
 
 function playIntent(game: Game, p: Player, rand: PseudoRandom): Intent | null {
   if (!p.isAlive()) return null;
+
+  // Armies (Prompt 3) get their own deterministic cadence and their own PRNG,
+  // deliberately independent of `rand`: folding them into the switch below
+  // would shift every other case's draw and quietly change which executions
+  // this reference game exercises.
+  if ((game.ticks() * 31 + p.smallID() * 7) % 9 === 0) {
+    const armyIntent = playArmyIntent(
+      game,
+      p,
+      new PseudoRandom(game.ticks() * 104_729 + p.smallID()),
+    );
+    if (armyIntent !== null) return armyIntent;
+  }
+
   // Most ticks a human does nothing; keep the game moving.
   if (!rand.chance(3)) return null;
   const others = game.players().filter((o) => o !== p && o.isPlayer());
@@ -420,6 +543,159 @@ function playIntent(game: Game, p: Player, rand: PseudoRandom): Intent | null {
       };
   }
   return null;
+}
+
+/**
+ * One army action: raise an army, or rename/compose/order/reinforce one that
+ * already exists. Uses its own PRNG (see playIntent) so it cannot disturb the
+ * draw sequence of the other intents.
+ */
+function playArmyIntent(
+  game: Game,
+  p: Player,
+  rand: PseudoRandom,
+): Intent | null {
+  const armies = game.armiesOf(p);
+  // Small slices, on purpose: this reference game also has to afford nukes,
+  // warships and trade ships, and troops locked into an army never return to
+  // the free pool. A greedy scripted army would starve all of them.
+  if (armies.length === 0 || rand.chance(2)) {
+    const tile = randomOwnedTile(rand, p);
+    if (tile === null || p.troops() < 40_000) return null;
+    return {
+      type: "create_army",
+      tile,
+      troops: p.troops() / 30,
+      name: null,
+      composition: null,
+    };
+  }
+  const army = pick(rand, armies)!;
+  switch (rand.nextInt(0, 5)) {
+    case 0:
+      return {
+        type: "rename_army",
+        armyId: army.id(),
+        name: `Army ${army.id()}`,
+      };
+    case 1:
+      // Deliberately does not total 100: the execution normalizes it, and this
+      // is the reference game that proves it does so identically everywhere.
+      return {
+        type: "set_army_composition",
+        armyId: army.id(),
+        composition: {
+          infantry: rand.nextInt(0, 60),
+          armor: rand.nextInt(0, 60),
+          artillery: rand.nextInt(0, 60),
+          support: rand.nextInt(0, 60),
+        },
+      };
+    case 2:
+      return {
+        type: "army_order",
+        armyId: army.id(),
+        order: { type: "reinforce", troops: p.troops() / 30 },
+      };
+    case 3:
+      return { type: "army_order", armyId: army.id(), order: { type: "hold" } };
+    default:
+      return {
+        type: "army_order",
+        armyId: army.id(),
+        order: { type: "createFront", tile: army.tile() },
+      };
+  }
+}
+
+/**
+ * One battle-plan action: draw a new plan, or edit one that already exists.
+ *
+ * Rare on purpose. This reference game also has to keep producing a trade ship, a
+ * SAM engagement and an artillery shell so every execution type lands in a
+ * snapshot, and a plan's driver starts real attacks — every extra one perturbs
+ * exactly those fights. The gate below still fires often enough to create plans
+ * and cycle through all five edits many times over.
+ *
+ * The gesture is deliberately sloppy — a run of border tiles and a straight arrow
+ * that may well run into the sea. That is the interesting case for this
+ * reference game: it proves the simulation's derived geometry is a function of
+ * the map and the proposal, and identical on every client that saw the same
+ * intent.
+ */
+function playBattlePlanIntent(
+  game: Game,
+  p: Player,
+  rand: PseudoRandom,
+): Intent | null {
+  if ((game.ticks() * 17 + p.smallID() * 5) % 47 !== 0) return null;
+  const plans = game.battlePlansOf(p);
+  const armies = game.armiesOf(p).map((a) => a.id());
+  const frontier = drawnFrontier(rand, p, game);
+  const arrow = drawnArrow(rand, game, frontier);
+
+  if (plans.length === 0 || rand.chance(3)) {
+    if (frontier.length === 0) return null;
+    const kind = rand.nextInt(0, 5);
+    return {
+      type: "battle_plan",
+      action: {
+        type: "create",
+        kind:
+          kind === 0
+            ? "offensive"
+            : kind === 1
+              ? "spearhead"
+              : kind === 2
+                ? "fallback"
+                : kind === 3
+                  ? "hold"
+                  : "frontline",
+        frontier,
+        // A `hold` or `fallback` plan draws no arrow; sending one anyway is a
+        // legitimate thing for a client to do and the simulation ignores it.
+        route: arrow,
+        armyIDs: armies.length === 0 ? [] : [pick(rand, armies)!],
+      },
+    };
+  }
+
+  const plan = pick(rand, plans)!;
+  switch (rand.nextInt(0, 5)) {
+    case 0:
+      return {
+        type: "battle_plan",
+        action: { type: "pause", planId: plan.id() },
+      };
+    case 1:
+      return {
+        type: "battle_plan",
+        action: { type: "resume", planId: plan.id() },
+      };
+    case 2:
+      return {
+        type: "battle_plan",
+        action: { type: "delete", planId: plan.id() },
+      };
+    case 3:
+      return {
+        type: "battle_plan",
+        action: { type: "reassign", planId: plan.id(), armyIDs: armies },
+      };
+    default:
+      if (frontier.length === 0) return null;
+      return {
+        type: "battle_plan",
+        action: {
+          type: "redraw",
+          planId: plan.id(),
+          kind: "offensive",
+          frontier,
+          route: arrow,
+          armyIDs: armies,
+        },
+      };
+  }
 }
 
 function nearbyWater(

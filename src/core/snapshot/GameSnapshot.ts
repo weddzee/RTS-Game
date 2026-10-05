@@ -5,6 +5,10 @@ import {
   AllianceRequestImpl,
   AllianceRequestSnapshot,
 } from "../game/AllianceRequestImpl";
+import type { ArmyState } from "../game/Army";
+import type { BattlePlanState } from "../game/BattlePlan";
+import { BattlePlanImpl, BattlePlanSnapshot } from "../game/BattlePlanImpl";
+import { ArmyImpl, ArmySnapshot } from "../game/ArmyImpl";
 import { AttackImpl, AttackSnapshot } from "../game/AttackImpl";
 import {
   Attack,
@@ -51,7 +55,21 @@ export const SNAPSHOT_MAGIC = "OpenFrontGameSnapshot";
  * Version of the root layout below. Everything inside it carries its own
  * record version, so this only moves when the root itself changes.
  */
-export const SNAPSHOT_FORMAT_VERSION = 1;
+export const SNAPSHOT_FORMAT_VERSION = 3;
+
+/**
+ * Root-level migrations, keyed by the version they migrate FROM.
+ *
+ * The root is a flat list of tables, so adding one is additive: a v1 root has
+ * no army table and no game records carry army state. `readVersioned` handles
+ * the game record itself; here we only have to supply the empty table.
+ */
+const ROOT_MIGRATIONS: Record<number, (data: any) => any> = {
+  1: (d: Record<string, unknown>) => ({ ...d, armies: d.armies ?? [] }),
+  // v2 predates battle plans. Additive, like the army table above: an older root
+  // simply has none, and `ROOT_MIGRATIONS` supplies the empty table.
+  2: (d: Record<string, unknown>) => ({ ...d, battlePlans: d.battlePlans ?? [] }),
+};
 
 const ExecRecordSchema = z.object({
   t: z.string(),
@@ -72,6 +90,8 @@ const RootSchema = z.object({
   miniMap: VersionedSchema,
   players: z.array(VersionedSchema),
   units: z.array(VersionedSchema),
+  armies: z.array(VersionedSchema),
+  battlePlans: z.array(VersionedSchema),
   attacks: z.array(VersionedSchema),
   alliances: z.array(VersionedSchema),
   allianceRequests: z.array(VersionedSchema),
@@ -121,6 +141,8 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
   const gameState = w.versioned(GameSnapshot, g.snapshotState(w));
 
   const units: Versioned[] = [];
+  const armies: Versioned[] = [];
+  const battlePlans: Versioned[] = [];
   const attacks: Versioned[] = [];
   const alliances: Versioned[] = [];
   const allianceRequests: Versioned[] = [];
@@ -158,6 +180,12 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
     });
     progressed ||= drain(w.units, units, (u) =>
       w.versioned(UnitSnapshot, (u as UnitImpl).snapshot(w)),
+    );
+    progressed ||= drain(w.armies, armies, (a) =>
+      w.versioned(ArmySnapshot, (a as ArmyImpl).state()),
+    );
+    progressed ||= drain(w.battlePlans, battlePlans, (p) =>
+      w.versioned(BattlePlanSnapshot, BattlePlanImpl.toState(p as BattlePlanImpl)),
     );
     progressed ||= drain(w.attacks, attacks, (a) =>
       w.versioned(AttackSnapshot, (a as AttackImpl).snapshot(w)),
@@ -198,6 +226,8 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
     ),
     players,
     units,
+    armies,
+    battlePlans,
     attacks,
     alliances,
     allianceRequests,
@@ -230,13 +260,24 @@ function decodeRoot(bytes: Uint8Array): Root {
   ) {
     throw new SnapshotError("not a game snapshot");
   }
-  const format = (raw as { format?: unknown }).format;
-  if (typeof format !== "number" || format > SNAPSHOT_FORMAT_VERSION) {
+  const storedFormat = (raw as { format?: unknown }).format;
+  if (
+    typeof storedFormat !== "number" ||
+    storedFormat > SNAPSHOT_FORMAT_VERSION
+  ) {
     throw new SnapshotError(
-      `snapshot format ${String(format)} is newer than this build supports (${SNAPSHOT_FORMAT_VERSION})`,
+      `snapshot format ${String(storedFormat)} is newer than this build supports (${SNAPSHOT_FORMAT_VERSION})`,
     );
   }
-  const root = RootSchema.safeParse(raw);
+  let migrated = raw;
+  for (let v = storedFormat; v < SNAPSHOT_FORMAT_VERSION; v++) {
+    const migrate = ROOT_MIGRATIONS[v];
+    if (migrate === undefined) {
+      throw new SnapshotError(`no snapshot migration from root format ${v}`);
+    }
+    migrated = migrate(migrated);
+  }
+  const root = RootSchema.safeParse(migrated);
   if (!root.success) {
     throw new SnapshotError(`malformed snapshot: ${root.error.message}`);
   }
@@ -320,6 +361,16 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
     UnitSnapshot,
     UnitImpl.prototype,
   );
+  const armies = shells<ArmyState, ArmyImpl>(
+    root.armies,
+    ArmySnapshot,
+    ArmyImpl.prototype,
+  );
+  const plans = shells<BattlePlanState, BattlePlanImpl>(
+    root.battlePlans,
+    BattlePlanSnapshot,
+    BattlePlanImpl.prototype,
+  );
   const attacks = shells<unknown, AttackImpl>(
     root.attacks,
     AttackSnapshot,
@@ -363,6 +414,8 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
 
   const r = new SnapshotReader(game, {
     units: units.objs as Unit[],
+    armies: armies.objs,
+    battlePlans: plans.objs,
     attacks: attacks.objs as Attack[],
     alliances: alliances.objs as MutableAlliance[],
     allianceRequests: requests.objs,
@@ -383,6 +436,16 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
     objs: T[];
   }) => t.objs.forEach((o, i) => o.restoreSnapshot(t.data[i] as never, r));
   fill(units);
+  // Armies carry their owner as a small id rather than a table reference, so
+  // they resolve through the (already filled) player shells.
+  armies.data.forEach((a, i) => {
+    armies.objs[i].restoreSnapshot(a, r.player(a.ownerID));
+  });
+  // Plans carry their owner as a small id, so they resolve through the (already
+  // filled) player shells exactly as armies do.
+  plans.data.forEach((p, i) => {
+    plans.objs[i].restoreSnapshot(p, r.player(p.ownerID));
+  });
   fill(attacks);
   fill(alliances);
   fill(requests);
