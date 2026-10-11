@@ -477,6 +477,95 @@ export class CloudflareDurableObject {
     return code;
   }
 
+  /** Fresh match record, shared by room creation and first-join. */
+  private newMatchState(): any {
+    return {
+      turn: 0,
+      players: new Map<string, PlayerSession>(),
+      armies: new Map<string, any>(),
+      airWings: new Map<string, any>(),
+      factories: new Map<string, any>(),
+      supply: new Map<string, number>(),
+    };
+  }
+
+  private async handleCreateRoom(request: Request): Promise<Response> {
+    let maxPlayers = 4;
+    try {
+      const body = (await request.json()) as { maxPlayers?: number };
+      if (typeof body.maxPlayers === "number" && body.maxPlayers > 0) {
+        maxPlayers = body.maxPlayers;
+      }
+    } catch {
+      // Defaults are fine for an empty/absent body.
+    }
+
+    const code = this.generateRoomCode();
+    this.state.set(code, this.newMatchState());
+
+    return new Response(
+      JSON.stringify({
+        code,
+        status: "waiting",
+        players: 0,
+        maxPlayers,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleListRooms(): Promise<Response> {
+    // Prompt 11.8: no public room list. Clients join by code.
+    return new Response(JSON.stringify([]), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  private async handleGetRoom(code: string): Promise<Response> {
+    const match = this.state.get(code);
+    if (!match) {
+      return new Response(JSON.stringify({ error: "Room not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(
+      JSON.stringify({
+        code,
+        status: "in_progress",
+        players: match.players.size,
+        maxPlayers: 4,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  private async handleDeleteRoom(code: string): Promise<Response> {
+    const existed = this.state.delete(code);
+    if (this.matchID === code) {
+      this.matchID = null;
+    }
+    return new Response(JSON.stringify({ success: existed }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  private async handleGetSnapshot(code: string): Promise<void> {
+    const match = this.state.get(code);
+    if (!match) return;
+
+    this.broadcastTo(code, {
+      type: "snapshot",
+      snapshot: {
+        sequence: match.turn,
+        tick: match.turn,
+        state: this.serializeState(match),
+        visibleState: this.buildVisibleState(match),
+      },
+    });
+  }
+
   // ============================================================
   // Command Type Handlers
   // ============================================================
