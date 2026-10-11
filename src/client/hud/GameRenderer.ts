@@ -22,6 +22,7 @@ import type { UserSettingModal } from "../UserSettingModal";
 import { GameView } from "../view";
 import { FrameProfiler } from "./FrameProfiler";
 import { ActionableEvents } from "./layers/ActionableEvents";
+import { AirWingPanel } from "./layers/AirWingPanel";
 import { AlertFrame } from "./layers/AlertFrame";
 import { ArmyPanel } from "./layers/ArmyPanel";
 import { AttacksDisplay } from "./layers/AttacksDisplay";
@@ -29,6 +30,7 @@ import { BuildMenu } from "./layers/BuildMenu";
 import { ChatDisplay } from "./layers/ChatDisplay";
 import { ChatModal } from "./layers/ChatModal";
 import { ControlPanel } from "./layers/ControlPanel";
+import { ResourceBar } from "./layers/ResourceBar";
 import { EmojiTable } from "./layers/EmojiTable";
 import { EventsDisplay } from "./layers/EventsDisplay";
 import { GameLeftSidebar } from "./layers/GameLeftSidebar";
@@ -263,6 +265,13 @@ export function createRenderer(
   // armed.
   armyPanel.plans = battlePlans;
 
+  const airWingPanel = document.querySelector("air-wing-panel") as AirWingPanel;
+  if (!(airWingPanel instanceof AirWingPanel)) {
+    console.error("air wing panel not found");
+  }
+  airWingPanel.game = game;
+  airWingPanel.eventBus = eventBus;
+
   const playerPanel = document.querySelector("player-panel") as PlayerPanel;
   if (!(playerPanel instanceof PlayerPanel)) {
     console.error("player panel not found");
@@ -329,6 +338,12 @@ export function createRenderer(
   immunityTimer.game = game;
   immunityTimer.eventBus = eventBus;
 
+  const resourceBar = document.querySelector("resource-bar") as ResourceBar;
+  if (!(resourceBar instanceof ResourceBar)) {
+    console.error("resource bar not found");
+  }
+  resourceBar.game = game;
+
   const inGamePromo = document.querySelector("in-game-promo") as InGamePromo;
   if (!(inGamePromo instanceof InGamePromo)) {
     console.error("in-game promo not found");
@@ -382,9 +397,11 @@ export function createRenderer(
     ),
     spawnTimer,
     immunityTimer,
+    resourceBar,
     gameLeftSidebar,
     unitDisplay,
     armyPanel,
+    airWingPanel,
     gameRightSidebar,
     controlPanel,
     playerInfo,

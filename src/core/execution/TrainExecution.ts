@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  escalatedTrainSpeedBonus,
+  escalationLevelForConfig,
+} from "../Escalation";
+import {
   Execution,
   Game,
   Player,
@@ -78,6 +82,16 @@ export class TrainExecution implements Execution {
       this.active = false;
       return;
     }
+    // Late-game pressure speeds logistics (bounded in Balance). Pure
+    // function of the tick and the lobby deadline, so every client derives
+    // the same value; snapshots persist it and init never re-runs. Set
+    // before the train units are built so the engine's own speed matches.
+    this.speed =
+      2 +
+      escalatedTrainSpeedBonus(
+        escalationLevelForConfig(mg.config().gameConfig(), ticks),
+      );
+
     this.train = this.createTrainUnits(spawn);
 
     const carUnitIds = this.cars.map((c) => c.id());

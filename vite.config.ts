@@ -145,7 +145,11 @@ function steamLinkAliasRedirect(): Plugin {
 // upstream). Forwards these prefix-less POSTs to a randomly chosen worker port
 // so the worker can mint a self-owned id. Runs as direct middleware (before
 // vite's /api proxy).
-const RANDOM_WORKER_PATHS = ["/api/create_game", "/api/adminbot/create_game"];
+const RANDOM_WORKER_PATHS = [
+  "/api/create_game",
+  "/api/adminbot/create_game",
+  "/api/create_private_game",
+];
 function randomWorkerCreateProxy(numWorkers: number): Plugin {
   return {
     name: "random-worker-create-proxy",

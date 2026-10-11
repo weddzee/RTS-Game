@@ -30,6 +30,7 @@ import {
   within,
 } from "../Util";
 import { AttackImpl } from "./AttackImpl";
+import { AIR_CAPACITY_MAX } from "./Aircraft";
 import {
   Alliance,
   AllianceInfo,
@@ -77,6 +78,16 @@ import {
   diffPlayerUpdate,
   packAttackTroopDeltas,
 } from "./GameUpdateUtils";
+import {
+  choicesForLevelUp,
+  isPerkId,
+  PerkId,
+  PROGRESSION_MAX_LEVEL,
+  scaleXPForPacing,
+  XP_PER_TILE_VS_PLAYER,
+  XP_PER_TILE_VS_TERRA,
+  xpForLevel,
+} from "./Progression";
 import { ReadonlyTileSet, TileSet } from "./TileSet";
 import {
   bumpTraversalGeneration,
@@ -188,6 +199,25 @@ export class PlayerImpl implements Player {
 
   private lastDeleteUnitTick: Tick = -1;
   private lastEmbargoAllTick: Tick = -1;
+  // Factories (Prompt 5.2): construction cooldown. Initialized far in the
+  // past so the first factory is always allowed.
+  private lastFactoryBuildTick: Tick = -100000;
+  // Aircraft (Prompt 7.3): banked air production, in whole points. Credited by
+  // Air factories, spent to raise wings and to replace losses.
+  private _airCapacity: number = 0;
+  // Match progression (Prompt 6): per-match XP/levels, no persistent grind.
+  // Everyone starts at Level 1 with 0 XP; levels persist for the match.
+  private _matchXP: number = 0;
+  private _matchLevel: number = 1;
+  private _pendingPerkChoices: PerkId[] = [];
+  private _appliedPerks: PerkId[] = [];
+  // Levels earned but not yet picked, oldest first. The choices on offer are
+  // derived from the head of this queue (see refreshPendingPerkChoices), so the
+  // queue is the only progression state a snapshot needs beyond level and XP.
+  private _pendingLevels: number[] = [];
+  // Memo key for _pendingPerkChoices: "<level>|<applied perks joined>". Null
+  // when nothing is pending. Derived state, never snapshotted.
+  private _pendingChoiceKey: string | null = null;
 
   public _incomingAttacks: Attack[] = [];
   public _outgoingAttacks: Attack[] = [];
@@ -415,6 +445,14 @@ export class PlayerImpl implements Player {
       betrayals: this._betrayalCount,
       lastDeleteUnitTick: this.lastDeleteUnitTick,
       isLobbyCreator: this.isLobbyCreator(),
+      // Match progression (Prompt 6): copied so diffs compare by value.
+      matchLevel: this._matchLevel,
+      matchXP: this._matchXP,
+      pendingPerks: [...this._pendingPerkChoices],
+      appliedPerks: [...this._appliedPerks],
+      // Aircraft (Prompt 7.3): banked production, so the panel can show what
+      // the player can spend right now.
+      airCapacity: this._airCapacity,
     };
   }
 
@@ -701,7 +739,133 @@ export class PlayerImpl implements Player {
     this._troops = toInt(troops);
   }
   conquer(tile: TileRef) {
+    // XP for capturing territory (6.1): full rate from another player, low
+    // expansion rate from empty land. Own tiles (re-stamps) pay nothing.
+    // Ally farming is impossible here — attacks on friendlies never run.
+    //
+    // Called by handleDeadDefender for a defeated player's remaining tiles
+    // while sweeping an elimination, so the XP_PER_TILE_VS_PLAYER rate applies
+    // to those too. That is deliberate: the elimination bonus is on top, and
+    // together they keep a decisive win clearly ahead of grinding border
+    // tiles without ever being the fastest way to a level.
+    const prev = this.mg.owner(tile);
     this.mg.conquer(this, tile);
+    if (prev === this) return;
+    this.addMatchXP(
+      prev.isPlayer() ? XP_PER_TILE_VS_PLAYER : XP_PER_TILE_VS_TERRA,
+    );
+  }
+
+  // --- Match progression (Prompt 6) --------------------------------------
+
+  matchXP(): number {
+    return this._matchXP;
+  }
+
+  matchLevel(): number {
+    return this._matchLevel;
+  }
+
+  /**
+   * Live arrays — do not mutate. Copied for the wire in toFullUpdate so
+   * diffPlayerUpdate keeps working (shared refs would compare equal).
+   */
+  pendingPerkChoices(): PerkId[] {
+    return this._pendingPerkChoices;
+  }
+
+  appliedPerks(): PerkId[] {
+    return this._appliedPerks;
+  }
+
+  /**
+   * Award base XP, scaled by the match pacing multiplier. Level-ups generate
+   * their pending choices deterministically from (id, level, applied perks).
+   *
+   * A single award can cross several thresholds at once (a large conquest, an
+   * elimination). Each crossing is its own level with its own choice set, and
+   * all but the newest queue up behind it in _pendingLevels. The player picks
+   * one option per level, oldest first, and may leave any of them pending for
+   * as long as they like — 6.5 requires that they can close the panel and
+   * select later, so nothing is ever silently discarded on their behalf.
+   */
+  addMatchXP(baseAmount: number): void {
+    if (baseAmount <= 0) return;
+    const scaled = scaleXPForPacing(
+      Math.floor(baseAmount),
+      this.mg.config().xpPacingPercent(),
+    );
+    if (scaled <= 0) return;
+    this._matchXP += scaled;
+    while (
+      this._matchLevel < PROGRESSION_MAX_LEVEL &&
+      this._matchXP >= xpForLevel(this._matchLevel + 1)
+    ) {
+      this._matchLevel++;
+      this._pendingLevels.push(this._matchLevel);
+    }
+    this.refreshPendingPerkChoices();
+  }
+
+  /**
+   * Recompute the options on offer for the oldest level still awaiting a pick.
+   *
+   * The options are derived state, not stored state: `choicesForLevelUp` is a
+   * pure function of (playerID, level, applied perks), so regenerating on
+   * demand always reproduces exactly the set that was offered when the level
+   * was reached. That is what lets a snapshot store the pending *levels* and
+   * restore an identical panel, and it is why the pending set never has to be
+   * snapshotted alongside them.
+   *
+   * Memoized on (level, applied set): the common case — nothing pending, or
+   * nothing newly applied — costs one string compare instead of a rehash.
+   */
+  private refreshPendingPerkChoices(): void {
+    const level = this._pendingLevels[0];
+    if (level === undefined) {
+      this._pendingPerkChoices = [];
+      this._pendingChoiceKey = null;
+      return;
+    }
+    const key = `${level}|${this._appliedPerks.join(",")}`;
+    if (key === this._pendingChoiceKey) return;
+    this._pendingPerkChoices = choicesForLevelUp(
+      this.id(),
+      level,
+      this._appliedPerks,
+    );
+    this._pendingChoiceKey = key;
+  }
+
+  /**
+   * Apply one pending perk. Returns true only when perkId was actually on
+   * offer, which is what makes a pick apply exactly once (6.4): the level's
+   * pending set is consumed, so a replayed or duplicated intent finds nothing
+   * pending and is refused. Unknown IDs and already-applied perks are refused
+   * too, so no client can grant itself a perk twice.
+   */
+  choosePerk(perkId: PerkId): boolean {
+    if (!isPerkId(perkId)) return false;
+    if (this._appliedPerks.includes(perkId)) return false;
+    if (!this._pendingPerkChoices.includes(perkId)) return false;
+    this._appliedPerks.push(perkId);
+    // Consume this level's pick. The next queued level, if any, becomes the
+    // offer and is recomputed against the newly applied set, so it can never
+    // offer the perk just taken.
+    this._pendingLevels.shift();
+    this._pendingChoiceKey = null;
+    this.refreshPendingPerkChoices();
+    return true;
+  }
+
+  /** The level whose choice is currently on offer; 0 when nothing is pending. */
+  pendingPerkLevel(): number {
+    return this._pendingLevels[0] ?? 0;
+  }
+
+  /** Levels earned but not yet picked, oldest first. */
+  pendingPerkLevels(): readonly number[] {
+    return this._pendingLevels;
   }
   orderRetreat(id: string) {
     const attack = this._outgoingAttacks.find((attack) => attack.id() === id);
@@ -1420,6 +1584,72 @@ export class PlayerImpl implements Player {
     return b;
   }
 
+  /** Unit count (not level-weighted) for factory build-limit checks. */
+  factoryUnitCount(): number {
+    let n = 0;
+    for (const u of this._units) {
+      if (u.type() === UnitType.Factory && u.isActive()) n++;
+    }
+    return n;
+  }
+
+  /** True when the factory construction cooldown has elapsed. */
+  factoryCooldownReady(): boolean {
+    return (
+      this.mg.ticks() - this.lastFactoryBuildTick >=
+      this.mg.config().factoryConstructionCooldown()
+    );
+  }
+
+  /** Stamped by ConstructionExecution after an intent-built factory (5.2). */
+  recordFactoryBuild(): void {
+    this.lastFactoryBuildTick = this.mg.ticks();
+  }
+
+  // --- aircraft (Prompt 7.3) ---------------------------------------------
+
+  /**
+   * Banked air production, in *points* — Prompt 5's abstract capacity rate, not
+   * an aircraft count. Air factories credit this every tick (see
+   * FactoryExecution); raising a wing and replacing losses both draw it down
+   * through AIR_POINTS_PER_AIRCRAFT. With no Air factory it never moves, which
+   * is exactly 7.3's "no air factory means negligible or no aircraft
+   * replacement".
+   *
+   * Integer: production rates are floored whole points, so the bank is a real
+   * ledger and not a fractional accumulator that could drift.
+   */
+  airCapacity(): number {
+    return this._airCapacity;
+  }
+
+  /** Credit production. Clamped to the cap so a big bank cannot snowball. */
+  addAirCapacity(points: number): number {
+    if (points <= 0) return 0;
+    const room = AIR_CAPACITY_MAX - this._airCapacity;
+    const added = Math.min(room, Math.floor(points));
+    if (added <= 0) return 0;
+    this._airCapacity += added;
+    return added;
+  }
+
+  /**
+   * Spend banked production. Returns how much was actually spent, which is less
+   * than asked when the bank is short — the caller checks, so a wing can never
+   * be raised on credit.
+   */
+  spendAirCapacity(points: number): number {
+    if (points <= 0) return 0;
+    const spent = Math.min(this._airCapacity, Math.floor(points));
+    this._airCapacity -= spent;
+    return spent;
+  }
+
+  /** True when the player can pay `points` right now. */
+  canAffordAirCapacity(points: number): boolean {
+    return this._airCapacity >= points;
+  }
+
   public findUnitToUpgrade(type: UnitType, targetTile: TileRef): Unit | false {
     const unit = this.findExistingUnitToUpgrade(type, targetTile);
     if (unit === false || !this.canUpgradeUnit(unit)) {
@@ -1488,6 +1718,13 @@ export class PlayerImpl implements Player {
       return false;
     }
     if (!this.isUnitValidToUpgrade(unit)) {
+      return false;
+    }
+    // Factories cap at Level 3 (5.6) — no infinite upgrade scaling.
+    if (
+      unit.type() === UnitType.Factory &&
+      unit.level() >= this.mg.config().factoryMaxLevel()
+    ) {
       return false;
     }
     return true;
@@ -1577,6 +1814,15 @@ export class PlayerImpl implements Player {
   ): TileRef | false {
     if (!this.canBuildUnitType(unitType)) {
       return false;
+    }
+    // Factories: server validates build limits (5.2) on top of
+    // ownership/resources/placement (checked in spawn helpers).
+    // Cooldown is enforced in ConstructionExecution (intent path) so direct
+    // buildUnit setup (tests, snapshots) is not throttled.
+    if (unitType === UnitType.Factory) {
+      if (this.factoryUnitCount() >= this.mg.config().factoryMaxPerPlayer()) {
+        return false;
+      }
     }
 
     return this.canSpawnUnitType(unitType, targetTile, validTiles);
@@ -2009,6 +2255,12 @@ export class PlayerImpl implements Player {
       relations: [...this.relations].map(([p, r]) => [w.player(p), r]),
       lastDeleteUnitTick: this.lastDeleteUnitTick,
       lastEmbargoAllTick: this.lastEmbargoAllTick,
+      lastFactoryBuildTick: this.lastFactoryBuildTick,
+      airCapacity: this._airCapacity,
+      matchXP: this._matchXP,
+      matchLevel: this._matchLevel,
+      pendingLevels: [...this._pendingLevels],
+      appliedPerks: [...this._appliedPerks],
       incomingAttacks: this._incomingAttacks.map((a) => w.attack(a)),
       outgoingAttacks: this._outgoingAttacks.map((a) => w.attack(a)),
       outgoingLandAttacks: this._outgoingLandAttacks.map((a) => w.attack(a)),
@@ -2086,6 +2338,40 @@ export class PlayerImpl implements Player {
     );
     this.lastDeleteUnitTick = s.lastDeleteUnitTick;
     this.lastEmbargoAllTick = s.lastEmbargoAllTick;
+    this.lastFactoryBuildTick =
+      (s as { lastFactoryBuildTick?: unknown }).lastFactoryBuildTick ===
+      undefined
+        ? -100000
+        : ((s as { lastFactoryBuildTick: number })
+            .lastFactoryBuildTick as number);
+    this._airCapacity =
+      typeof (s as { airCapacity?: unknown }).airCapacity === "number"
+        ? (s as { airCapacity: number }).airCapacity
+        : 0;
+    // Match progression (Prompt 6, v3+ fields). Older snapshots lack them —
+    // everyone starts at Level 1 with 0 XP. The pending choice set is not
+    // stored at all; refreshPendingPerkChoices rebuilds it from pendingLevels.
+    this._matchXP =
+      typeof (s as { matchXP?: unknown }).matchXP === "number"
+        ? ((s as { matchXP: number }).matchXP as number)
+        : 0;
+    this._matchLevel =
+      typeof (s as { matchLevel?: unknown }).matchLevel === "number"
+        ? ((s as { matchLevel: number }).matchLevel as number)
+        : 1;
+    this._pendingLevels = Array.isArray(
+      (s as { pendingLevels?: unknown }).pendingLevels,
+    )
+      ? [...((s as { pendingLevels: number[] }).pendingLevels as number[])]
+      : [];
+    this._appliedPerks = Array.isArray(
+      (s as { appliedPerks?: unknown }).appliedPerks,
+    )
+      ? [...((s as { appliedPerks: string[] }).appliedPerks as string[])]
+      : [];
+    // Rebuild the offer from the restored queue; the memo starts cold.
+    this._pendingChoiceKey = null;
+    this.refreshPendingPerkChoices();
     this._incomingAttacks = s.incomingAttacks.map((i) => r.attack(i));
     this._outgoingAttacks = s.outgoingAttacks.map((i) => r.attack(i));
     this._outgoingLandAttacks = s.outgoingLandAttacks.map((i) => r.attack(i));
@@ -2110,7 +2396,7 @@ export class PlayerImpl implements Player {
 
 export const PlayerSnapshot = snapshotType({
   name: "Player",
-  version: 1,
+  version: 5,
   schema: z.object({
     smallID: zInt(),
     info: PlayerInfoSchema,
@@ -2155,6 +2441,15 @@ export const PlayerSnapshot = snapshotType({
     relations: z.array(z.tuple([zPlayerRef(), zNum()])),
     lastDeleteUnitTick: zInt(),
     lastEmbargoAllTick: zInt(),
+    lastFactoryBuildTick: zInt(),
+    // Aircraft (Prompt 7.3): banked air production, in whole points.
+    airCapacity: zInt(),
+    // Match progression (Prompt 6). `pendingLevels` is the queue of levels
+    // earned but not yet picked; the options on offer are re-derived from it.
+    matchXP: zNum(),
+    matchLevel: zInt(),
+    pendingLevels: z.array(zInt()),
+    appliedPerks: z.array(z.string()),
     incomingAttacks: z.array(zRef()),
     outgoingAttacks: z.array(zRef()),
     outgoingLandAttacks: z.array(zRef()),
@@ -2175,5 +2470,27 @@ export const PlayerSnapshot = snapshotType({
       .optional(),
     numUnitsConstructed: z.array(z.tuple([UnitTypeSchema, zInt()])),
   }),
+  migrations: {
+    1: (d: any) => ({ ...d, lastFactoryBuildTick: -100000 }),
+    2: (d: any) => ({
+      ...d,
+      matchXP: 0,
+      matchLevel: 1,
+      pendingLevels: [],
+      appliedPerks: [],
+    }),
+    // v3 stored the resolved choice list; v4 stores the queue of levels the
+    // player still owes a pick for. A non-empty v3 list means exactly one level
+    // was waiting, and it was always the player's current level.
+    3: (d: any) => ({
+      ...d,
+      pendingLevels:
+        Array.isArray(d.pendingPerkChoices) && d.pendingPerkChoices.length > 0
+          ? [d.matchLevel]
+          : [],
+    }),
+    // v4 predates aircraft: nobody had banked air production yet.
+    4: (d: any) => ({ ...d, airCapacity: 0 }),
+  },
 });
 export type PlayerState = z.infer<typeof PlayerSnapshot.schema>;

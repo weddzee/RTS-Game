@@ -112,6 +112,7 @@ const SAMPLE_INTENTS: StampedIntent[] = [
     config: { bots: 5, instantBuild: true },
   },
   { type: "toggle_game_start_timer", clientID: P1 },
+  { type: "choose_perk", clientID: P1, perkId: "war-industry" },
 ];
 
 const SERVER_MESSAGES: ServerMessage[] = [

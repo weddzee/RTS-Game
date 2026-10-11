@@ -183,8 +183,8 @@ exports[`trade ship scenarios > ten ports, ~1800-tile route 1`] = `
 exports[`train scenarios > external city in the cluster 1`] = `
 {
   "aExternalTradeGold": 0n,
-  "aGoldDelta": 380000n,
-  "aGoldPerMinute": 76000,
+  "aGoldDelta": 424985n,
+  "aGoldPerMinute": 85000,
   "aSelfTradeGold": 380000n,
   "bExternalTradeGold": 250000n,
   "bGoldDelta": 250000n,
@@ -195,8 +195,8 @@ exports[`train scenarios > external city in the cluster 1`] = `
 exports[`train scenarios > factory and four cities 1`] = `
 {
   "aExternalTradeGold": 0n,
-  "aGoldDelta": 210000n,
-  "aGoldPerMinute": 42000,
+  "aGoldDelta": 254985n,
+  "aGoldPerMinute": 51000,
   "aSelfTradeGold": 210000n,
   "bExternalTradeGold": 0n,
   "bGoldDelta": 0n,
@@ -207,8 +207,8 @@ exports[`train scenarios > factory and four cities 1`] = `
 exports[`train scenarios > factory and one city 1`] = `
 {
   "aExternalTradeGold": 0n,
-  "aGoldDelta": 230000n,
-  "aGoldPerMinute": 46000,
+  "aGoldDelta": 274985n,
+  "aGoldPerMinute": 55000,
   "aSelfTradeGold": 230000n,
   "bExternalTradeGold": 0n,
   "bGoldDelta": 0n,
@@ -219,8 +219,8 @@ exports[`train scenarios > factory and one city 1`] = `
 exports[`train scenarios > two factories and two cities 1`] = `
 {
   "aExternalTradeGold": 0n,
-  "aGoldDelta": 290000n,
-  "aGoldPerMinute": 58000,
+  "aGoldDelta": 379970n,
+  "aGoldPerMinute": 75990,
   "aSelfTradeGold": 290000n,
   "bExternalTradeGold": 0n,
   "bGoldDelta": 0n,

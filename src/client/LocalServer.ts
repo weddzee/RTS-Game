@@ -1,5 +1,6 @@
 import { ClientEnv } from "src/client/ClientEnv";
 import { z } from "zod";
+import { GameEnv } from "../core/configuration/Config";
 import { EventBus } from "../core/EventBus";
 import {
   AllPlayersStats,
@@ -31,15 +32,11 @@ import { startSingleplayerHeartbeat } from "./SingleplayerHeartbeat";
 import {
   defaultReplaySpeedMultiplier,
   ReplaySpeedMultiplier,
+  speedOrderForSession,
 } from "./utilities/ReplaySpeedMultiplier";
 
-// Order: 0.5, 1, 2, max (same as ReplayPanel)
-const SPEED_ORDER: ReplaySpeedMultiplier[] = [
-  ReplaySpeedMultiplier.slow,
-  ReplaySpeedMultiplier.normal,
-  ReplaySpeedMultiplier.fast,
-  ReplaySpeedMultiplier.fastest,
-];
+// SPEED_ORDER lives in utilities/ReplaySpeedMultiplier.ts (shared with
+// ReplayPanel); dev-only 5x/10x steps are DEV_SPEED_UP_TO there.
 
 // build a small backlog so MAX can catch up.
 const MAX_REPLAY_BACKLOG_TURNS = 60;
@@ -86,6 +83,11 @@ export class LocalServer {
     this.clientMessage = clientMessage;
   }
 
+  /** Speed steps available to this session (see speedOrderForSession). */
+  private speedOrder(): ReplaySpeedMultiplier[] {
+    return speedOrderForSession(this.isReplay, ClientEnv.env() === GameEnv.Dev);
+  }
+
   start() {
     console.log("local server starting");
     this.turnCheckInterval = setInterval(() => {
@@ -115,18 +117,20 @@ export class LocalServer {
 
     if (!this.isReplay) {
       this.eventBus.on(GameSpeedUpIntentEvent, () => {
-        const idx = SPEED_ORDER.indexOf(this.replaySpeedMultiplier);
-        if (idx < 0 || idx >= SPEED_ORDER.length - 1) return;
-        this.replaySpeedMultiplier = SPEED_ORDER[idx + 1];
+        const order = this.speedOrder();
+        const idx = order.indexOf(this.replaySpeedMultiplier);
+        if (idx < 0 || idx >= order.length - 1) return;
+        this.replaySpeedMultiplier = order[idx + 1];
         this.eventBus.emit(
           new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
         );
       });
 
       this.eventBus.on(GameSpeedDownIntentEvent, () => {
-        const idx = SPEED_ORDER.indexOf(this.replaySpeedMultiplier);
+        const order = this.speedOrder();
+        const idx = order.indexOf(this.replaySpeedMultiplier);
         if (idx <= 0) return;
-        this.replaySpeedMultiplier = SPEED_ORDER[idx - 1];
+        this.replaySpeedMultiplier = order[idx - 1];
         this.eventBus.emit(
           new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
         );

@@ -149,6 +149,12 @@ export function applyGraphicsOverrides(
     settings.passEnabled.falloutBloom = overrides.passEnabled.fallout;
     settings.passEnabled.falloutLight = overrides.passEnabled.fallout;
   }
+  if (overrides.passEnabled?.airWing !== undefined) {
+    // Air mode (Prompt 7.8). Distinct from the pass's own draw gate: this is
+    // the persisted user preference, and the pass reads it to decide whether to
+    // draw the region grid at all.
+    settings.passEnabled.airWing = overrides.passEnabled.airWing;
+  }
   if (overrides.terrain?.backgroundColor !== undefined) {
     settings.terrain.backgroundColor = overrides.terrain.backgroundColor;
   }

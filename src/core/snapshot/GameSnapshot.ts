@@ -5,6 +5,7 @@ import {
   AllianceRequestImpl,
   AllianceRequestSnapshot,
 } from "../game/AllianceRequestImpl";
+import { AirWingStateSchema, AirWingImpl, AirWingSnapshot } from "../game/AirWingImpl";
 import type { ArmyState } from "../game/Army";
 import type { BattlePlanState } from "../game/BattlePlan";
 import { BattlePlanImpl, BattlePlanSnapshot } from "../game/BattlePlanImpl";
@@ -55,7 +56,7 @@ export const SNAPSHOT_MAGIC = "OpenFrontGameSnapshot";
  * Version of the root layout below. Everything inside it carries its own
  * record version, so this only moves when the root itself changes.
  */
-export const SNAPSHOT_FORMAT_VERSION = 3;
+export const SNAPSHOT_FORMAT_VERSION = 4;
 
 /**
  * Root-level migrations, keyed by the version they migrate FROM.
@@ -68,7 +69,10 @@ const ROOT_MIGRATIONS: Record<number, (data: any) => any> = {
   1: (d: Record<string, unknown>) => ({ ...d, armies: d.armies ?? [] }),
   // v2 predates battle plans. Additive, like the army table above: an older root
   // simply has none, and `ROOT_MIGRATIONS` supplies the empty table.
-  2: (d: Record<string, unknown>) => ({ ...d, battlePlans: d.battlePlans ?? [] }),
+2: (d: Record<string, unknown>) => ({ ...d, battlePlans: d.battlePlans ?? [] }),
+  // v3 predates air wings. Additive, like the tables above: an older root simply
+  // has none, and this supplies the empty table.
+  3: (d: Record<string, unknown>) => ({ ...d, airWings: d.airWings ?? [] }),
 };
 
 const ExecRecordSchema = z.object({
@@ -92,6 +96,7 @@ const RootSchema = z.object({
   units: z.array(VersionedSchema),
   armies: z.array(VersionedSchema),
   battlePlans: z.array(VersionedSchema),
+  airWings: z.array(VersionedSchema),
   attacks: z.array(VersionedSchema),
   alliances: z.array(VersionedSchema),
   allianceRequests: z.array(VersionedSchema),
@@ -141,8 +146,9 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
   const gameState = w.versioned(GameSnapshot, g.snapshotState(w));
 
   const units: Versioned[] = [];
-  const armies: Versioned[] = [];
+const armies: Versioned[] = [];
   const battlePlans: Versioned[] = [];
+  const airWings: Versioned[] = [];
   const attacks: Versioned[] = [];
   const alliances: Versioned[] = [];
   const allianceRequests: Versioned[] = [];
@@ -187,6 +193,9 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
     progressed ||= drain(w.battlePlans, battlePlans, (p) =>
       w.versioned(BattlePlanSnapshot, BattlePlanImpl.toState(p as BattlePlanImpl)),
     );
+    progressed ||= drain(w.airWings, airWings, (a) =>
+      w.versioned(AirWingSnapshot, (a as AirWingImpl).state()),
+    );
     progressed ||= drain(w.attacks, attacks, (a) =>
       w.versioned(AttackSnapshot, (a as AttackImpl).snapshot(w)),
     );
@@ -227,7 +236,8 @@ export function snapshotGameData(game: Game, opts: SnapshotOptions = {}): Root {
     players,
     units,
     armies,
-    battlePlans,
+battlePlans,
+    airWings,
     attacks,
     alliances,
     allianceRequests,
@@ -371,6 +381,11 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
     BattlePlanSnapshot,
     BattlePlanImpl.prototype,
   );
+  const airWings = shells<z.infer<typeof AirWingStateSchema>, AirWingImpl>(
+    root.airWings,
+    AirWingSnapshot,
+    AirWingImpl.prototype,
+  );
   const attacks = shells<unknown, AttackImpl>(
     root.attacks,
     AttackSnapshot,
@@ -416,6 +431,7 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
     units: units.objs as Unit[],
     armies: armies.objs,
     battlePlans: plans.objs,
+    airWings: airWings.objs,
     attacks: attacks.objs as Attack[],
     alliances: alliances.objs as MutableAlliance[],
     allianceRequests: requests.objs,
@@ -445,6 +461,11 @@ export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
   // filled) player shells exactly as armies do.
   plans.data.forEach((p, i) => {
     plans.objs[i].restoreSnapshot(p, r.player(p.ownerID));
+  });
+  // Air wings carry their owner as a small id too, so they resolve through the
+  // already-filled player shells exactly as armies do.
+  airWings.data.forEach((a, i) => {
+    airWings.objs[i].restoreSnapshot(a, r.player(a.ownerID));
   });
   fill(attacks);
   fill(alliances);

@@ -70,7 +70,10 @@ export const MATCH_PACING_CONFIGS: Record<
     constructionSpeedMultiplier: 0.9,
     movementSpeedMultiplier: 1.0,
     troopGenerationMultiplier: 0.9,
-    xpGainMultiplier: 1.0,
+    // 20 minutes of play produces far more XP opportunity than 15, so XP is
+    // paid out more slowly: levels stay spread across the whole match instead
+    // of maxing out in the first two thirds. Consumed by Config.xpPacingPercent.
+    xpGainMultiplier: 0.9,
     lateGameUnlockAtMinutes: 14,
   },
   sandbox: {
@@ -109,9 +112,10 @@ export interface MatchPacingGameConfigPatch {
 
 /**
  * The portion of a pacing preset the current GameConfig schema can carry.
- * Troop/construction/movement/XP multipliers have no schema fields yet;
- * they are recorded on the room and documented here until those systems
- * read from MatchPacingConfig directly.
+ * The remaining multipliers have no schema fields; they are recorded on the
+ * room and documented here, and each system that needs one reads it from
+ * MATCH_PACING_CONFIGS rather than re-deriving it (Config.xpPacingPercent
+ * consumes xpGainMultiplier this way).
  */
 export function matchPacingGameConfigPatch(
   preset: unknown,
@@ -121,4 +125,30 @@ export function matchPacingGameConfigPatch(
     maxTimerValue: config.durationMinutes,
     goldMultiplier: config.resourceMultiplier,
   };
+}
+
+/**
+ * The preset a match duration corresponds to, given the wire-carried
+ * GameConfig.maxTimerValue (minutes, null = unlimited).
+ *
+ * This is the bridge from what the wire carries to the preset tables above:
+ * the sim only ever sees `maxTimerValue`, so every multiplier that is not a
+ * schema field is resolved through here. A custom duration has no preset and
+ * falls back to standard.
+ */
+export function matchPacingPresetForDuration(
+  minutes: number | null | undefined,
+): MatchPacingPreset {
+  for (const preset of MATCH_PACING_PRESETS) {
+    if (MATCH_PACING_CONFIGS[preset].durationMinutes === minutes) return preset;
+  }
+  return "standard";
+}
+
+/** XP gain for a match duration as an integer percent (100 = Standard). */
+export function matchPacingXpPercent(
+  minutes: number | null | undefined,
+): number {
+  const config = MATCH_PACING_CONFIGS[matchPacingPresetForDuration(minutes)];
+  return Math.round(config.xpGainMultiplier * 100);
 }

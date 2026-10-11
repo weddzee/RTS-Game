@@ -1,5 +1,6 @@
 import { placeName, placeSpawnName } from "../client/hud/NameBoxCalculator";
 import { Config } from "./configuration/Config";
+import { AirRegionExecution } from "./execution/air/AirRegionExecution";
 import { DoomsdayClockExecution } from "./execution/DoomsdayClockExecution";
 import { Executor } from "./execution/ExecutionManager";
 import { RecomputeRailClusterExecution } from "./execution/RecomputeRailClusterExecution";
@@ -191,6 +192,11 @@ export class GameRunner {
         new RecomputeRailClusterExecution(this.game.railNetwork()),
       );
     }
+    // The air war (Prompt 7). One global pass, and it runs *before*
+    // WinCheckExecution so a strike that kills the last player is already
+    // counted when the win check looks. It is a no-op until somebody owns a
+    // wing, so adding it unconditionally costs one integer compare per second.
+    this.game.addExecution(new AirRegionExecution());
   }
 
   public addTurn(turn: Turn): void {

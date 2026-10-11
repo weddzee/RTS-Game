@@ -15,7 +15,8 @@
     "fx": true,
     "bar": true,
     "nameDebug": false,
-    "armyMarker": true
+    "armyMarker": true,
+    "airWing": false
   },
   "terrain": {
     "backgroundColor": "#3c3c3c",
@@ -361,6 +362,14 @@
     "maxRadiusBonus": 0.75,
     "stackSpread": 1.0472,
     "stackSpreadMax": 1.6
+  },
+  "airWing": {
+    "regionAlpha": 0.55,
+    "markerAlpha": 0.95,
+    "lineAlpha": 0.7,
+    "markerRadiusTiles": 6.0,
+    "lineHalfWidthTiles": 1.4,
+    "cullZoom": 0.35
   },
   "smallPlayerGlow": {
     "color": [1.0, 0.12, 0.1],

@@ -619,6 +619,33 @@ export class PlayerView {
     return this.state.lastDeleteUnitTick;
   }
 
+  // Match progression (Prompt 6). These mirror the Player interface so the
+  // perkBonusFor() duck type resolves against this view too — which is what
+  // keeps a client-predicted troop ceiling, income rate or factory output
+  // identical to the number the simulation actually uses.
+
+  matchLevel(): number {
+    return this.state.matchLevel;
+  }
+
+  matchXP(): number {
+    return this.state.matchXP;
+  }
+
+  /** Perk options awaiting a pick; empty when there is nothing to choose. */
+  pendingPerkChoices(): string[] {
+    return this.state.pendingPerks;
+  }
+
+  appliedPerks(): string[] {
+    return this.state.appliedPerks;
+  }
+
+  /** Banked aircraft production in whole aircraft (Prompt 7.3). */
+  airCapacity(): number {
+    return this.state.airCapacity;
+  }
+
   deleteUnitCooldown(): number {
     return (
       Math.max(

@@ -9,10 +9,16 @@ import { CreateArmyExecutionSnapshot } from "../execution/army/CreateArmyExecuti
 import { RenameArmyExecutionSnapshot } from "../execution/army/RenameArmyExecution";
 import { SetArmyCompositionExecutionSnapshot } from "../execution/army/SetArmyCompositionExecution";
 import { AttackExecutionSnapshot } from "../execution/AttackExecution";
+import { AirRegionExecutionSnapshot } from "../execution/air/AirRegionExecution";
+import { AirWingExecutionSnapshot } from "../execution/air/AirWingExecution";
+import { AirWingOrderExecutionSnapshot } from "../execution/air/AirWingOrderExecution";
+import { CreateAirWingExecutionSnapshot } from "../execution/air/CreateAirWingExecution";
+import { RenameAirWingExecutionSnapshot } from "../execution/air/RenameAirWingExecution";
 import { BattlePlanExecutionSnapshot } from "../execution/battleplan/BattlePlanExecution";
 import { CreateBattlePlanExecutionSnapshot } from "../execution/battleplan/CreateBattlePlanExecution";
 import { EditBattlePlanExecutionSnapshot } from "../execution/battleplan/EditBattlePlanExecution";
 import { BoatRetreatExecutionSnapshot } from "../execution/BoatRetreatExecution";
+import { ChoosePerkExecutionSnapshot } from "../execution/ChoosePerkExecution";
 import { CityExecutionSnapshot } from "../execution/CityExecution";
 import { ConstructionExecutionSnapshot } from "../execution/ConstructionExecution";
 import { DefensePostExecutionSnapshot } from "../execution/DefensePostExecution";
@@ -65,12 +71,18 @@ export const EXECUTION_SNAPSHOT_TYPES = [
   AllianceRejectExecutionSnapshot,
   AllianceRequestExecutionSnapshot,
   AttackExecutionSnapshot,
+  AirRegionExecutionSnapshot,
+  AirWingExecutionSnapshot,
+  AirWingOrderExecutionSnapshot,
+  CreateAirWingExecutionSnapshot,
+  RenameAirWingExecutionSnapshot,
   ArmyExecutionSnapshot,
   BattlePlanExecutionSnapshot,
   ArmyOrderExecutionSnapshot,
   BoatRetreatExecutionSnapshot,
   BreakAllianceExecutionSnapshot,
   CityExecutionSnapshot,
+  ChoosePerkExecutionSnapshot,
   ConstructionExecutionSnapshot,
   CreateArmyExecutionSnapshot,
   CreateBattlePlanExecutionSnapshot,

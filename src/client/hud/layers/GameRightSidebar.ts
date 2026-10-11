@@ -7,6 +7,7 @@ import { createNextLobby } from "../../Api";
 import { ClientEnv } from "../../ClientEnv";
 import "../../components/DoomsdayClockPanel";
 import "../../components/OvertimePanel";
+import "../../components/ProgressionPanel";
 import { Controller } from "../../Controller";
 import { crazyGamesSDK } from "../../CrazyGamesSDK";
 import { isDesktopShell } from "../../DesktopShell";
@@ -409,6 +410,12 @@ export class GameRightSidebar extends LitElement implements Controller {
         .hasWinner=${this.hasWinner}
         .refreshKey=${this.timer}
       ></overtime-panel>
+      <progression-panel
+        .game=${this.game}
+        .eventBus=${this.eventBus}
+        .hasWinner=${this.hasWinner}
+        .refreshKey=${this.timer}
+      ></progression-panel>
     `;
   }
 

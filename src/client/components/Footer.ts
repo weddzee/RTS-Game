@@ -1,6 +1,8 @@
 import { LitElement, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { assetUrl } from "../../core/AssetUrls";
+import "../CreditsModal";
+import type { CreditsModal } from "../CreditsModal";
 import { composeVersionDisplay, desktopVersion } from "../DesktopShell";
 import { currentGameVersion } from "../GameVersion";
 import "./SteamWishlistButton";
@@ -18,6 +20,10 @@ export class Footer extends LitElement {
 
   createRenderRoot() {
     return this;
+  }
+
+  private openCredits() {
+    (document.querySelector("credits-modal") as CreditsModal | null)?.open();
   }
 
   connectedCallback() {
@@ -119,6 +125,13 @@ export class Footer extends LitElement {
               class="hover:text-white transition-colors"
             ></a>
             <span data-i18n="main.copyright"></span>
+            <!-- PRIVATE_LOBBY_MODE: visible Credits / Open Source entry
+                 (AGPL §7 attribution + source link). -->
+            <button
+              data-i18n="credits.link_title"
+              @click=${this.openCredits}
+              class="hover:text-white transition-colors underline"
+            ></button>
             <a
               href="/privacy-policy.html"
               data-i18n="main.privacy_policy"

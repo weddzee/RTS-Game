@@ -4,8 +4,11 @@ import { PathFinder } from "../pathfinding/types";
 import { AllPlayersStats, ClientID } from "../Schemas";
 import type { ExecRecord, SnapshotWriter } from "../snapshot/SnapshotContext";
 import { formatPlayerDisplayName } from "../Util";
+import type { AirRegions } from "./AirRegion";
+import type { AirWing } from "./AirWing";
 import type { Army, ArmyFront } from "./Army";
 import type { BattlePlan } from "./BattlePlan";
+import type { FactoryType } from "./Factory";
 import { GameMap, TileRef } from "./GameMap";
 import {
   GameUpdate,
@@ -14,6 +17,7 @@ import {
   UnitUpdate,
 } from "./GameUpdates";
 import { MotionPlanRecord } from "./MotionPlans";
+import type { PerkId } from "./Progression";
 import { RailNetwork } from "./RailNetwork";
 import { Stats } from "./Stats";
 import { ReadonlyTileSet } from "./TileSet";
@@ -29,6 +33,156 @@ function isEnumValue<T extends Record<string, string | number>>(
 export type PlayerID = string;
 export type Tick = number;
 export type Gold = bigint;
+
+// ---------------------------------------------------------------------------
+// 11.1 Runtime abstraction (Prompt 11)
+// ---------------------------------------------------------------------------
+
+/** The interface between the game core and the hosting environment (local or Cloudflare).
+ * Implementations: LocalHostAdapter, CloudflareDurableObjectAdapter.
+ * The GameCore uses this interface without knowing where it runs.
+ */
+export type HostingEnvironment = "local" | "cloudflare";
+
+export interface HostingAdapter {
+  /** Create a new game match */
+  createMatch(options: CreateMatchOptions): Promise<MatchID>;
+  /** Accept a player into a match */
+  joinMatch(matchID: MatchID, playerID: PlayerID, sessionToken: string): Promise<PlayerSession>;
+  /** Player command into the match */
+  executeCommand(matchID: MatchID, command: SemanticCommand): Promise<CommandResult>;
+  /** Advance simulation one tick */
+  advanceTick(matchID: MatchID): Promise<TickStatus>;
+  /** Get current game state snapshot */
+  getSnapshot(matchID: MatchID): Promise<GameSnapshot>;
+  /** Handle player connect/disconnect */
+  playerEvent(matchID: MatchID, event: PlayerEvent): Promise<void>;
+  /** Get match metadata */
+  getMatchInfo(matchID: MatchID): Promise<MatchInfo>;
+  /** Check if match exists and is active */
+  exists(matchID: MatchID): Promise<boolean>;
+}
+
+export interface CreateMatchOptions {
+  map: GameMapType;
+  gameConfig?: Partial<GameConfig>;
+  maxPlayers?: number;
+  settings?: MatchSettings;
+}
+
+export type MatchID = string;
+
+export interface PlayerSession {
+  playerID: PlayerID;
+  sessionToken: string;
+  isAlive: boolean;
+  /** Last tick this player received updates up to */
+  lastReceivedTick: Tick;
+}
+
+/** Prompt 11.4: Semantic commands - every command contains protocol version,
+ * player/session identity, command ID, payload. Server validates everything.
+ */
+export enum CommandType {
+  CREATE_ARMY = "create_army",
+  RENAME_ARMY = "rename_army",
+  SET_COMPOSITION = "set_composition",
+  CREATE_FRONT = "create_front",
+  CREATE_BATTLE_PLAN = "create_battle_plan",
+  ACTIVATE_PLAN = "activate_plan",
+  BUILD_FACTORY = "build_factory",
+  SELECT_LEVEL_UPGRADE = "select_level_upgrade",
+  CREATE_AIR_WING = "create_air_wing",
+  ASSIGN_AIR_MISSION = "assign_air_mission",
+  AIRLIFT_ARMY = "airlift_army",
+  // Add more as needed...
+}
+
+export interface SemanticCommand {
+  /** Protocol version, for compatibility checking */
+  version: number;
+  /** Player/session identity */
+  playerID: PlayerID;
+  /** Unique command ID for dedup and gap detection */
+  commandID: string;
+  /** The command payload */
+  payload: unknown;
+}
+
+export interface CommandResult {
+  success: boolean;
+  /** Why it was refused, if not successful */
+  failureReason?: string;
+  /** The tick the command was processed at */
+  tick: Tick;
+  /** Optional new state delta */
+  delta?: unknown;
+}
+
+export interface GameSnapshot {
+  /** Sequence number for gap detection and resync */
+  sequence: number;
+  /** The game state snapshot (serialized for network transmission) */
+  state: unknown;
+  /** The tick this snapshot represents */
+  tick: Tick;
+  /** Visible information for this player (fog-of-war filtered) */
+  visibleState?: unknown;
+}
+
+export interface TickStatus {
+  currentTick: Tick;
+  /** True if the simulation advanced */
+  advanced: boolean;
+  /** Reason if not advanced */
+  reason?: string;
+}
+
+export interface MatchInfo {
+  map: GameMapType;
+  maxPlayers: number;
+  currentPlayers: number;
+  status: "waiting" | "in_progress" | "finished";
+  createdAt: Tick;
+}
+
+export interface PlayerEvent {
+  type: "connect" | "disconnect" | "reconnect";
+  playerID: PlayerID;
+  sessionToken?: string;
+  timestamp: Tick;
+}
+
+/** Prompt 11.8: Room creation endpoints conceptually.
+ * POST /api/rooms
+ * GET /api/rooms/
+ * GET/WS /api/rooms/:code/connect
+ * Use safe room-code validation. No public room list required.
+ */
+export interface MatchSettings {
+  /** Game duration in ticks (0 = unlimited) */
+  duration: number;
+  /** Fog of war enabled */
+  fogOfWar: boolean;
+  /** Supply system enabled */
+  supply: boolean;
+  /** Air warfare enabled */
+  airWarfare: boolean;
+  /** Maximum armies */
+  maxArmies: number;
+  /** Maximum factories */
+  maxFactories: number;
+}
+
+/** Prompt 11.8: Room information returned by the room service. */
+export interface RoomInfo {
+  code: string;
+  maxPlayers: number;
+  currentPlayers: number;
+  status: "waiting" | "in_progress" | "finished";
+  createdAt: Tick;
+  map: GameMapType;
+}
 
 export type WarshipState = {
   state: "patrolling" | "retreating" | "docked";
@@ -311,7 +465,9 @@ export interface UnitParamsMap {
     loaded?: boolean;
   };
 
-  [UnitType.Factory]: Record<string, never>;
+  [UnitType.Factory]: {
+    factoryType?: FactoryType;
+  };
 
   [UnitType.MissileSilo]: Record<string, never>;
 
@@ -571,6 +727,23 @@ export interface Unit {
   level(): number;
   increaseLevel(): void;
   decreaseLevel(destroyer?: Player): void;
+
+  // Factories (Prompt 5). Only valid when type() === UnitType.Factory;
+  // other unit types throw, mirroring warshipState()/nukeState().
+  factoryType(): FactoryType;
+  factoryEfficiency(): number;
+  setFactoryEfficiency(efficiencyPercent: number): void;
+  factoryDisabledTicks(): number;
+  setFactoryDisabledTicks(ticks: number): void;
+  /** Count a disabled-factory countdown down by one tick. */
+  tickFactoryDisabled(): void;
+  /** Recover one efficiency point after a capture or bombing. */
+  repairFactoryTick(): void;
+  /** Reduce efficiency by damagePercent (bombing hook, 5.7). */
+  damageFactory(damagePercent: number, attacker?: Player): void;
+  /** Temporarily disable production for ticks (bombing hook, 5.7). */
+  disableFactory(ticks: number): void;
+  isFactoryOperational(): boolean;
 }
 
 export interface TerraNullius {
@@ -647,6 +820,14 @@ export interface Player {
   gold(): Gold;
   addGold(toAdd: Gold, tile?: TileRef): void;
   removeGold(toRemove: Gold): Gold;
+
+  // Aircraft production (Prompt 7.3). Banked by Air factories and spent on
+  // wings and replacements. Integer whole aircraft: with no Air factory the
+  // bank never moves, so replacement is negligible rather than free.
+  airCapacity(): number;
+  addAirCapacity(points: number): number;
+  spendAirCapacity(points: number): number;
+  canAffordAirCapacity(points: number): boolean;
 
   // Cumulative trade revenue, surfaced on the live PlayerUpdate so clients can
   // compute per-source gold rates (leaderboard "Ship/Train Trade Gold/min").
@@ -785,6 +966,32 @@ export interface Player {
   playerProfile(): PlayerProfile;
   // WARNING: this operation is expensive.
   bestTransportShipSpawn(tile: TileRef): TileRef | false;
+
+  // Match progression (Prompt 6): per-match XP/levels, no persistent grind.
+  /** Cumulative match XP (pacing-scaled at award time). */
+  matchXP(): number;
+  /** Current match level, 1-7, derived from XP. */
+  matchLevel(): number;
+  /** Level-up perk options on offer (stable IDs); empty when nothing pending. */
+  pendingPerkChoices(): PerkId[];
+  /** Applied perk IDs, in pick order. */
+  appliedPerks(): PerkId[];
+  /**
+   * The level whose choice is on offer, or 0 when nothing is pending. Equal to
+   * matchLevel() for the usual one-level-at-a-time case; behind it when a
+   * single award crossed several thresholds and picks are still owed.
+   */
+  pendingPerkLevel(): number;
+  /** Levels earned but not yet picked, oldest first. */
+  pendingPerkLevels(): readonly number[];
+  /** Award base XP (scaled by pacing); may level up and generate choices. */
+  addMatchXP(baseAmount: number): void;
+  /**
+   * Apply one pending perk. Returns true when perkId was actually on offer
+   * (then the offer is consumed, so it applies once); false for unknown,
+   * already-applied, or un-offered IDs — the client is never trusted.
+   */
+  choosePerk(perkId: PerkId): boolean;
 }
 
 export interface Game extends GameMap {
@@ -904,6 +1111,20 @@ export interface Game extends GameMap {
   nextArmyID(): number;
   /** Allocates the next front id. Game-wide, monotonic. */
   nextFrontID(): number;
+
+  // Air wings (Prompt 7). See game/Aircraft.ts and game/AirRegion.ts.
+  /** The map's air-region partition. Derived from map size, never snapshotted. */
+  airRegions(): AirRegions;
+  /** Every active air wing, in creation order. */
+  airWings(): AirWing[];
+  airWingsOf(player: Player | PlayerID): AirWing[];
+  airWing(id: number): AirWing | undefined;
+  /** Wings assigned to one air region. */
+  airWingsInRegion(regionId: number): AirWing[];
+  addAirWing(wing: AirWing): void;
+  removeAirWing(wing: AirWing): void;
+  /** Allocates the next air wing id. Game-wide, monotonic. */
+  nextAirWingID(): number;
 
   // Battle plans
   // See game/BattlePlan.ts. A plan is the canonical record of a drawn order: a

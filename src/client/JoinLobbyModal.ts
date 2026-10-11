@@ -21,7 +21,8 @@ import {
   PublicGameInfo,
 } from "../core/Schemas";
 import { GameMode, GameType, HumansVsNations } from "../core/game/Game";
-import { getApiBase } from "./Api";
+import { isValidRoomCode, normalizeRoomCode } from "../server/PrivateRooms";
+import { getApiBase, resolveRoomCode } from "./Api";
 import { crazyGamesSDK } from "./CrazyGamesSDK";
 import { PublicLobbySocket } from "./LobbySocket";
 import { JoinLobbyEvent } from "./Main";
@@ -983,6 +984,10 @@ export class JoinLobbyModal extends BaseModal {
     const trimmed = input.trim();
     if (!trimmed) return null;
     const extracted = this.extractLobbyIdFromUrl(trimmed).trim();
+    // PRIVATE_LOBBY_MODE: 6-character room codes pass through for API
+    // resolution in enterLobbyFromInput.
+    const code = normalizeRoomCode(extracted);
+    if (isValidRoomCode(code)) return code;
     if (!this.isValidLobbyId(extracted)) return null;
     return extracted;
   }
@@ -1039,10 +1044,32 @@ export class JoinLobbyModal extends BaseModal {
   }
 
   private async enterLobbyFromInput(spectator: boolean): Promise<void> {
-    const lobbyId = this.normalizeLobbyId(this.lobbyIdInput.value);
-    if (!lobbyId) {
+    const rawId = this.normalizeLobbyId(this.lobbyIdInput.value);
+    if (!rawId) {
       this.showMessage(translateText("private_lobby.not_found"), "red");
       return;
+    }
+
+    // PRIVATE_LOBBY_MODE: resolve room codes to game ids first. Unknown or
+    // expired codes end here with a clean message; started rooms admit
+    // spectators but turn players away before any socket opens.
+    let lobbyId = rawId;
+    if (isValidRoomCode(rawId)) {
+      let resolved = null;
+      try {
+        resolved = await resolveRoomCode(rawId);
+      } catch (error) {
+        console.warn("Failed to resolve room code", error);
+      }
+      if (resolved === null) {
+        this.showMessage(translateText("private_menu.room_not_found"), "red");
+        return;
+      }
+      if (resolved.hasStarted && !spectator) {
+        this.showMessage(translateText("private_menu.room_started"), "red");
+        return;
+      }
+      lobbyId = resolved.gameID;
     }
 
     this.lobbyIdInput.value = lobbyId;

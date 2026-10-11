@@ -47,12 +47,13 @@ import {
   UserMeResponse,
   UserMeResponseSchema,
 } from "../core/ApiSchemas";
+import { UserSettings } from "../core/game/UserSettings";
+import type { MatchPacingPreset } from "../core/MatchPacing";
 import {
   AnalyticsRecord,
   ArchivedAnalyticsRecordSchema,
   GameInfo,
 } from "../core/Schemas";
-import { UserSettings } from "../core/game/UserSettings";
 import { getApiBase, getAudience } from "./ApiBase";
 import {
   getAuthHeader,
@@ -61,7 +62,7 @@ import {
   logOut,
   userAuth,
 } from "./Auth";
-import { ClientEnv } from "./ClientEnv";
+import { ClientEnv, NoServerError } from "./ClientEnv";
 import { ensureServerList } from "./ServerList";
 
 export async function fetchPlayerById(
@@ -2098,6 +2099,108 @@ export async function createLobby(): Promise<{
     console.error("Error creating lobby:", error);
     throw error;
   }
+}
+
+// PRIVATE_LOBBY_MODE: create a private game and mint its 6-character room
+// code in one call (POST /api/create_private_game, randomly routed to a
+// worker like /api/create_game — see vite.config.ts RANDOM_WORKER_PATHS and
+// nginx.conf). gameConfig mirrors the create_game body (partial GameConfig);
+// options selects the match pacing preset and records hosts' toggles.
+export interface PrivateRoomCreateOptions {
+  durationPreset?: MatchPacingPreset;
+  bots?: number;
+  fogEnabled?: boolean;
+  aircraftEnabled?: boolean;
+  advancedSupplyEnabled?: boolean;
+}
+
+export interface PrivateRoomCreated {
+  gameID: string;
+  roomCode: string;
+  workerPath: string;
+}
+
+export async function createPrivateRoom(
+  gameConfig?: Record<string, unknown>,
+  options?: PrivateRoomCreateOptions,
+): Promise<PrivateRoomCreated> {
+  if ((await ensureServerList()) === "outdated") {
+    throw new Error(
+      "createPrivateRoom: this build has no server; a newer version is available",
+    );
+  }
+  const token = await getPlayToken();
+  const response = await fetch(
+    `${ClientEnv.serverHttpBase()}/api/create_private_game`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        config: gameConfig ?? {},
+        options: options ?? {},
+      }),
+    },
+  );
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    console.error("createPrivateRoom: server error response:", errorText);
+    throw new Error(`create private room failed: HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as {
+    gameID: string;
+    roomCode: string;
+    workerPath: string;
+  };
+  return {
+    gameID: data.gameID,
+    roomCode: data.roomCode,
+    workerPath: data.workerPath,
+  };
+}
+
+// PRIVATE_LOBBY_MODE: resolve a room code to its game. Room codes are
+// minted with worker affinity (workerIndex(code) === owner), so the lookup
+// goes straight to the owning worker, exactly like a worker-prefixed game
+// route. Returns null for unknown/malformed/expired codes — never throws
+// for a clean 404, so the menu can show "room not found" inline.
+export interface ResolvedPrivateRoom {
+  gameID: string;
+  workerPath: string;
+  hasStarted: boolean;
+}
+
+export async function resolveRoomCode(
+  code: string,
+): Promise<ResolvedPrivateRoom | null> {
+  const normalized = code
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "");
+  let url: string;
+  try {
+    url = `${ClientEnv.serverHttpBase()}/${ClientEnv.gameWorkerPath(normalized)}/api/room/${encodeURIComponent(normalized)}`;
+  } catch (e) {
+    if (e instanceof NoServerError) return null;
+    throw e;
+  }
+  const response = await fetch(url);
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`resolve room failed: HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as {
+    gameID: string;
+    workerPath: string;
+    hasStarted: boolean;
+  };
+  return {
+    gameID: data.gameID,
+    workerPath: data.workerPath,
+    hasStarted: data.hasStarted,
+  };
 }
 
 // POST /wX/api/create_game?previous=<gameID>, targeted at the worker that owns

@@ -851,6 +851,23 @@ export class GraphicsAdvancedSettings extends LitElement {
     this.patchPassEnabled({ fallout: !this.currentFallout() });
   }
 
+  /**
+   * Air mode (Prompt 7.8). Off by default, and the default is the requirement:
+   * the air-region grid is the largest overlay in the game and the base map must
+   * not be flooded. Toggling writes the graphics override like every other pass
+   * toggle, so it is per-player, persisted, and needs no new plumbing.
+   */
+  private currentAirMode(): boolean {
+    return (
+      this.userSettings.graphicsOverrides().passEnabled?.airWing ??
+      renderDefaults.passEnabled.airWing
+    );
+  }
+
+  private onToggleAirMode() {
+    this.patchPassEnabled({ airWing: !this.currentAirMode() });
+  }
+
   private currentGlowStrength(): number {
     return (
       this.userSettings.graphicsOverrides().smallPlayerGlow?.strength ??
@@ -1388,6 +1405,14 @@ export class GraphicsAdvancedSettings extends LitElement {
         id="fallout-toggle"
         .checked=${this.currentFallout()}
         @change=${this.onToggleFallout}
+      ></setting-toggle>
+
+      <setting-toggle
+        label=${translateText("graphics_setting.air_mode_label")}
+        description=${translateText("graphics_setting.air_mode_desc")}
+        id="air-mode-toggle"
+        .checked=${this.currentAirMode()}
+        @change=${this.onToggleAirMode}
       ></setting-toggle>
 
       <setting-slider

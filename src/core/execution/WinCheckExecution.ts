@@ -12,6 +12,7 @@ import {
 } from "../game/Game";
 import { execSnapshotType } from "../snapshot/ExecutionSnapshot";
 import type { ExecRecord, SnapshotReader } from "../snapshot/SnapshotContext";
+import { StandardVictoryRules } from "../VictoryRules";
 
 export class WinEvent implements GameEvent {
   constructor(public readonly winner: Player) {}
@@ -23,10 +24,6 @@ export class WinCheckExecution implements Execution {
   private mg: Game | null = null;
 
   private checkedRankedSpawns = false;
-
-  // Hard time limit (in seconds) to force a winner before the server's
-  // maxGameDuration hard kill. 170mins (10 mins before 3hrs)
-  private static readonly HARD_TIME_LIMIT_SECONDS = 170 * 60;
 
   constructor() {}
 
@@ -114,30 +111,25 @@ export class WinCheckExecution implements Execution {
   }
 
   // Hold more than the required share of non-fallout land, or outlast the
-  // lobby timer / hard limit.
+  // lobby timer / hard limit. Predicates live in VictoryRules; this method
+  // only supplies this game's readings.
   private hasWon(tilesOwned: number): boolean {
     if (this.mg === null) throw new Error("Not initialized");
+    const rules = new StandardVictoryRules(this.mg.config());
     const timeElapsed = this.mg.elapsedGameSeconds();
-    // null (host lobby, timer off) means no timer, same as undefined.
-    const maxTimerValue = this.mg.config().gameConfig().maxTimerValue;
     if (
-      maxTimerValue !== undefined &&
-      maxTimerValue !== null &&
-      timeElapsed >= maxTimerValue * 60
+      rules.hasTimerWin(
+        timeElapsed,
+        this.mg.config().gameConfig().maxTimerValue,
+      )
     ) {
       return true;
     }
-    if (timeElapsed >= WinCheckExecution.HARD_TIME_LIMIT_SECONDS) {
-      return true;
-    }
-    const numTilesWithoutFallout =
-      this.mg.numLandTiles() - this.mg.numTilesWithFallout();
-    // Cross-multiplied: the threshold is a whole percentage, so this is
-    // exact integer math.
-    return (
-      tilesOwned * 100 >
-      numTilesWithoutFallout *
-        this.mg.config().percentageTilesOwnedToWin(timeElapsed)
+    return rules.hasTerritorialWin(
+      tilesOwned,
+      this.mg.numLandTiles(),
+      this.mg.numTilesWithFallout(),
+      rules.requiredSharePercent(timeElapsed),
     );
   }
 

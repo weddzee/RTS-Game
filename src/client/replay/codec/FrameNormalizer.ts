@@ -88,6 +88,11 @@ export const UPDATE_TYPE_ROUTING: Record<
   // data in the replay instead of dropping it, and army markers appear in the
   // replay viewer when the codec learns to fold them into frame state.
   Army: "misc",
+  // Air wings (Prompt 7.8) route like armies: stored verbatim, because the
+  // normalizer has no air path yet and dropping the records would lose the wings
+  // from a replay entirely.
+  AirWing: "misc",
+  AirRegion: "misc",
 };
 
 /**

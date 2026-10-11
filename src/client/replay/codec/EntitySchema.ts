@@ -387,6 +387,14 @@ export const PLAYER_FIELDS: readonly FieldDef<PlayerFields>[] = [
   field(["outgoingAllianceRequests", list(STRING)]),
   field(["alliances", list(ALLIANCE)]),
   field(["outgoingEmojis", list(EMOJI)]),
+  // Match progression (Prompt 6) and banked air production (Prompt 7.3). Both
+  // triples share a mask bit because within each they always change together:
+  // the XP bar moves exactly when the level does, and banked production only
+  // moves when a factory ticks. Keeping them packed leaves the table two
+  // entries shorter, which matters — the change mask is a u32 and the table is
+  // close to its limit.
+  field(["matchLevel", U8], ["matchXP", COUNTER], ["airCapacity", COUNTER]),
+  field(["pendingPerks", list(STRING)], ["appliedPerks", list(STRING)]),
 ];
 
 export const UNIT_FIELDS: readonly FieldDef<UnitFields>[] = [

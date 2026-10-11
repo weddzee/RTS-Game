@@ -2,6 +2,12 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
+  AIR_POINTS_PER_AIRCRAFT,
+  AircraftType,
+  WING_CREATION_COST,
+} from "../../src/core/game/Aircraft";
+import { FactoryType } from "../../src/core/game/Factory";
+import {
   AllPlayers,
   Difficulty,
   Game,
@@ -170,6 +176,33 @@ export function scriptedTurn(game: Game): Turn {
       if (planIntent !== null) {
         intents.push({ ...planIntent, clientID } as StampedIntent);
       }
+
+      // Level-up picks (Prompt 6) ride the same way: a perk costs nothing, so
+      // spending a slot on one cannot starve the rest of the reference game.
+      // ChoosePerkExecution finishes inside the tick it starts, so a snapshot
+      // taken at the right checkpoint is the only way to catch one.
+      const pendingPerk = p.pendingPerkChoices()[0];
+      if (pendingPerk !== undefined) {
+        intents.push({
+          type: "choose_perk",
+          perkId: pendingPerk,
+          clientID,
+        } as StampedIntent);
+      }
+
+      // Aircraft (Prompt 7) ride along for the same reason. Only the Air
+      // Factory build costs anything, and only once per player; raising a wing
+      // spends banked *air* production, which the other intents never touch.
+      // Taking a slot in playIntent instead measurably starved the SAM and
+      // artillery actions this test depends on, so it stays here.
+      const airIntent = playAirWingIntent(
+        game,
+        p,
+        new PseudoRandom(game.ticks() * 65_537 + p.smallID() * 31),
+      );
+      if (airIntent !== null) {
+        intents.push({ ...airIntent, clientID } as StampedIntent);
+      }
     }
   }
   if (tick === 21) {
@@ -257,6 +290,33 @@ function queuedIntent(game: Game, p: Player, tick: number): Intent | null {
       composition: { infantry: 40, armor: 40, artillery: 10, support: 10 },
     },
     { type: "army_order", armyId: 1, order: { type: "hold" } },
+    // Progression (Prompt 6): a pick with nothing pending is refused, exactly
+    // like `cancel_attack` with a nonexistent id above — but the execution
+    // still exists for the tick it runs in, which is the point.
+    { type: "choose_perk", perkId: "war-industry" },
+    // Aircraft (Prompt 7). All four air executions are global or long-lived, so
+    // unlike the one-shot army intents above they stay in the snapshot: the
+    // create fails (no Air Factory, no banked production), which still leaves
+    // the region and per-wing executions to run for the rest of the game.
+    {
+      type: "create_air_wing",
+      aircraftType: "Fighter",
+      name: "1st Wing",
+      regionId: null,
+    },
+    { type: "rename_air_wing", wingId: 1, name: "Renamed Wing" },
+    {
+      type: "air_wing_order",
+      wingId: 1,
+      regionId: 0,
+      mission: { type: "airSuperiority" },
+    },
+    {
+      type: "air_wing_order",
+      wingId: 1,
+      regionId: 0,
+      mission: { type: "strike", target: "militaryIndustry" },
+    },
   ];
   return queued[(tick - 20) / 2] ?? null;
 }
@@ -394,6 +454,8 @@ function playIntent(game: Game, p: Player, rand: PseudoRandom): Intent | null {
     );
     if (armyIntent !== null) return armyIntent;
   }
+
+  
 
   // Most ticks a human does nothing; keep the game moving.
   if (!rand.chance(3)) return null;
@@ -606,6 +668,88 @@ function playArmyIntent(
         order: { type: "createFront", tile: army.tile() },
       };
   }
+}
+
+/**
+ * One aircraft action (Prompt 7): raise a wing, or rename/station one that
+ * already exists.
+ *
+ * Three steps, in the order a player would take them:
+ *   1. no Air Factory -> build one (7.3 makes the factory the prerequisite)
+ *   2. no wing, and enough production banked -> raise it
+ *   3. a wing exists -> rename it or station it in a region on a mission
+ *
+ * Step 3 matters most here: AirWingExecution lives for the rest of the match,
+ * so unlike the one-shot army intents it has to actually be raised in this
+ * reference game to appear in a snapshot at all.
+ *
+ * Uses its own PRNG so it cannot disturb the other draws, and rides alongside
+ * the main intent rather than competing for its slot — see the caller.
+ */
+function playAirWingIntent(
+  game: Game,
+  p: Player,
+  rand: PseudoRandom,
+): Intent | null {
+  // Cadence: air production banks slowly (a factory is 5 points a tick, a wing
+  // costs 1000), so this is polled rarely. Firing it every tick would spam
+  // intent frames that all get refused.
+  if ((game.ticks() * 17 + p.smallID() * 11) % 29 !== 0) return null;
+
+  const wings = game.airWingsOf(p);
+
+  if (wings.length === 0) {
+    const airFactories = p
+      .units(UnitType.Factory)
+      .filter(
+        (u) => u.isActive() && !u.isUnderConstruction() && u.factoryType() === FactoryType.Air,
+      );
+    if (airFactories.length === 0) {
+      const tile = randomOwnedTile(rand, p);
+      if (tile === null || p.canBuild(UnitType.Factory, tile) === false) {
+        return null;
+      }
+      return {
+        type: "build_unit",
+        unit: UnitType.Factory,
+        tile,
+        factoryType: FactoryType.Air,
+      };
+    }
+    // The factory is up but production may not have banked yet. If it has, this
+    // raises the wing; if not, the cadence comes round again later.
+    if (!p.canAffordAirCapacity(WING_CREATION_COST * AIR_POINTS_PER_AIRCRAFT)) {
+      return null;
+    }
+    // Station on the wing's first attempt so the region assignment, the
+    // mission line and the region overlay all get exercised.
+    const regionId = game.airRegions().bounds(0) === null ? null : 0;
+    return {
+      type: "create_air_wing",
+      aircraftType: rand.chance(3) ? AircraftType.Bomber : AircraftType.Fighter,
+      name: null,
+      regionId,
+    };
+  }
+
+  const wing = pick(rand, wings)!;
+  if (rand.chance(3)) {
+    return {
+      type: "rename_air_wing",
+      wingId: wing.id(),
+      name: `Wing ${wing.id()}`,
+    };
+  }
+  // Region 0 always exists on a real map, so no bounds check is needed here.
+  const fighter = wing.aircraftType() === AircraftType.Fighter;
+  return {
+    type: "air_wing_order",
+    wingId: wing.id(),
+    regionId: 0,
+    mission: fighter
+      ? { type: rand.chance(2) ? "intercept" : "airSuperiority" }
+      : { type: "strike", target: "militaryIndustry" },
+  };
 }
 
 /**

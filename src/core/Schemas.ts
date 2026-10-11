@@ -15,6 +15,7 @@ import {
 import type { GameEvent } from "./EventBus";
 import { ARMY_NAME_MAX_LENGTH } from "./game/ArmyName";
 import { BATTLE_PLAN_ORDERS } from "./game/BattlePlan";
+import { FactoryType } from "./game/Factory";
 import {
   AllPlayers,
   Difficulty,
@@ -66,7 +67,11 @@ export type Intent =
   | RenameArmyIntent
   | SetArmyCompositionIntent
   | ArmyOrderIntent
-  | BattlePlanIntent;
+  | BattlePlanIntent
+  | ChoosePerkIntent
+  | CreateAirWingIntent
+  | RenameAirWingIntent
+  | AirWingOrderIntent;
 
 export type AttackIntent = z.infer<typeof AttackIntentSchema>;
 export type CancelAttackIntent = z.infer<typeof CancelAttackIntentSchema>;
@@ -110,6 +115,10 @@ export type SetArmyCompositionIntent = z.infer<
 >;
 export type ArmyOrderIntent = z.infer<typeof ArmyOrderIntentSchema>;
 export type BattlePlanIntent = z.infer<typeof BattlePlanIntentSchema>;
+export type ChoosePerkIntent = z.infer<typeof ChoosePerkIntentSchema>;
+export type CreateAirWingIntent = z.infer<typeof CreateAirWingIntentSchema>;
+export type RenameAirWingIntent = z.infer<typeof RenameAirWingIntentSchema>;
+export type AirWingOrderIntent = z.infer<typeof AirWingOrderIntentSchema>;
 
 export type Turn = z.infer<typeof TurnSchema>;
 export type GameConfig = z.infer<typeof GameConfigSchema>;
@@ -770,6 +779,9 @@ export const BuildUnitIntentSchema = z.object({
   tile: zb.uint(),
   rocketDirectionUp: z.boolean().optional(),
   amount: zb.uint({ min: 1, max: MAX_UPGRADE_AMOUNT }).optional(),
+  // Factories (Prompt 5.1): specialization. Optional so older clients that
+  // only know UnitType.Factory keep working (defaults to Civilian).
+  factoryType: z.enum(FactoryType).optional(),
 });
 
 export const UpgradeStructureIntentSchema = z.object({
@@ -942,6 +954,81 @@ export const BattlePlanIntentSchema = z.object({
   ]),
 });
 
+/**
+ * Pick one of the level-up perks the simulation offered (Prompt 6).
+ *
+ * The client names a perk by its stable catalog ID and nothing else — no
+ * effect, no magnitude, no level, no description. The options themselves were
+ * generated in the simulation from (playerID, level, applied perks) via a
+ * deterministic hash, stored on the player, and re-validated on arrival:
+ * ChoosePerkExecution applies a perk only if that ID is actually pending, so a
+ * forged or replayed pick is refused and a perk is never applied twice.
+ *
+ * The ID is a plain string, not a numeric tag: the catalog is append-only, so
+ * an ID written into a turn or a snapshot today must keep meaning the same perk
+ * after new entries are added. `isPerkId` is the gate.
+ */
+export const ChoosePerkIntentSchema = z.object({
+  type: z.literal("choose_perk"),
+  perkId: z.string(),
+});
+
+/**
+ * Raise a new air wing (Prompt 7.2, 7.3).
+ *
+ * The player names an aircraft *type* and nothing else about the war: no
+ * region, no mission, no aircraft count. A wing starts with its type's standard
+ * size, on its default mission, unassigned — and both the type and the price
+ * are re-checked in CreateAirWingExecution, so a client that asks for a
+ * 60-aircraft wing for free is refused exactly as an invalid type is.
+ *
+ * `regionId` is accepted so a player can raise a wing and station it in one
+ * gesture; it is validated against the map's air-region layout in the
+ * execution, not here, because the layout is derived from map dimensions rather
+ * than carried on the wire.
+ */
+export const CreateAirWingIntentSchema = z.object({
+  type: z.literal("create_air_wing"),
+  aircraftType: z.string(),
+  name: z.string().nullable(),
+  regionId: zb.int().nullable(),
+});
+
+/** Rename an air wing. Validated in the simulation, like RenameArmyIntent. */
+export const RenameAirWingIntentSchema = z.object({
+  type: z.literal("rename_air_wing"),
+  wingId: zb.uint(),
+  name: z.string(),
+});
+
+/**
+ * Station a wing and choose what it does (Prompt 7.5, 7.6).
+ *
+ * `mission` is the discriminated union the simulation stores, so a strike
+ * carries its target *category* — never a tile, a unit id or a damage figure.
+ * That is 7.6's "server selects valid targets / do not allow client to claim
+ * arbitrary damage" expressed in the type: there is no field in which a client
+ * could express a target it was not offered, let alone a result.
+ */
+export const AirWingOrderIntentSchema = z.object({
+  type: z.literal("air_wing_order"),
+  wingId: zb.uint(),
+  regionId: zb.int().nullable(),
+  mission: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("airSuperiority") }),
+    z.object({ type: z.literal("intercept") }),
+    z.object({
+      type: z.literal("strike"),
+      target: z.enum([
+        "militaryIndustry",
+        "airIndustry",
+        "groundArmy",
+        "infrastructure",
+      ]),
+    }),
+  ]),
+});
+
 export const IntentSchema = z.discriminatedUnion("type", [
   AttackIntentSchema,
   CancelAttackIntentSchema,
@@ -973,6 +1060,10 @@ export const IntentSchema = z.discriminatedUnion("type", [
   SetArmyCompositionIntentSchema,
   ArmyOrderIntentSchema,
   BattlePlanIntentSchema,
+  ChoosePerkIntentSchema,
+  CreateAirWingIntentSchema,
+  RenameAirWingIntentSchema,
+  AirWingOrderIntentSchema,
 ]);
 
 // StampedIntent = Intent with server-stamped clientID (used in turns and execution)

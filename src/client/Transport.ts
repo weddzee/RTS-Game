@@ -8,8 +8,9 @@ import {
 } from "../core/CloseCodes";
 import { EventBus, EventConstructor, GameEvent } from "../core/EventBus";
 import type { ArmyOrder } from "../core/game/Army";
-import type { BattlePlanOrder } from "../core/game/BattlePlan";
+import type { AirMission } from "../core/game/Aircraft";
 import type { ArmyComposition } from "../core/game/ArmyComposition";
+import type { BattlePlanOrder } from "../core/game/BattlePlan";
 import {
   AllPlayers,
   GameType,
@@ -283,6 +284,52 @@ export class BattlePlanIntentEvent implements GameEvent {
   ) {}
 }
 
+/**
+ * Pick a level-up perk (Prompt 6).
+ *
+ * The payload is exactly what crosses the wire: a stable perk catalog ID. The
+ * options were generated in the simulation and are already on the player, and
+ * ChoosePerkExecution re-validates the ID against them, so nothing here is
+ * trusted and a stale click (the panel was open, the pick was taken in another
+ * tab) is simply refused.
+ */
+export class ChoosePerkIntentEvent implements GameEvent {
+  constructor(public readonly perkId: string) {}
+}
+
+/**
+ * Air wings (Prompt 7).
+ *
+ * Same contract as the army events: the client sends requests, never results.
+ * A wing is raised with a type and an optional region, renamed, and ordered to
+ * a region with a mission. Nothing here expresses a target beyond a strike's
+ * category, and nothing expresses damage — CreateAirWingExecution and
+ * AirRegionExecution own all of that, so a tampered client gets a different
+ * outcome on every peer rather than an advantage.
+ */
+export class CreateAirWingIntentEvent implements GameEvent {
+  constructor(
+    public readonly aircraftType: string,
+    public readonly name: string | null,
+    public readonly regionId: number | null,
+  ) {}
+}
+
+export class RenameAirWingIntentEvent implements GameEvent {
+  constructor(
+    public readonly wingId: number,
+    public readonly name: string,
+  ) {}
+}
+
+export class AirWingOrderIntentEvent implements GameEvent {
+  constructor(
+    public readonly wingId: number,
+    public readonly regionId: number | null,
+    public readonly mission: AirMission,
+  ) {}
+}
+
 export class SendKickPlayerIntentEvent implements GameEvent {
   constructor(public readonly target: string) {}
 }
@@ -470,6 +517,42 @@ export class Transport {
       this.sendIntent({
         type: "battle_plan",
         action: e.action,
+      }),
+    );
+
+    // Match progression (Prompt 6). A thin adapter for the same reason: the ID
+    // is already the wire shape, and ChoosePerkExecution decides whether it is
+    // actually available.
+    this.subscribe(ChoosePerkIntentEvent, (e) =>
+      this.sendIntent({
+        type: "choose_perk",
+        perkId: e.perkId,
+      }),
+    );
+
+    // Air wings (Prompt 7). Thin adapters again — the payload is already the
+    // wire shape and the executions own every decision.
+    this.subscribe(CreateAirWingIntentEvent, (e) =>
+      this.sendIntent({
+        type: "create_air_wing",
+        aircraftType: e.aircraftType,
+        name: e.name,
+        regionId: e.regionId,
+      }),
+    );
+    this.subscribe(RenameAirWingIntentEvent, (e) =>
+      this.sendIntent({
+        type: "rename_air_wing",
+        wingId: e.wingId,
+        name: e.name,
+      }),
+    );
+    this.subscribe(AirWingOrderIntentEvent, (e) =>
+      this.sendIntent({
+        type: "air_wing_order",
+        wingId: e.wingId,
+        regionId: e.regionId,
+        mission: e.mission,
       }),
     );
 

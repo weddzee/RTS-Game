@@ -690,10 +690,11 @@ class Client {
       } else {
         updateAccountNavButton(userMeResponse);
       }
-      const isAdFree =
-        userMeResponse !== false && userMeResponse.player?.adfree === true;
-      window.adsEnabled =
-        !isAdFree && !crazyGamesSDK.isOnCrazyGames() && !isDesktopShell();
+      // PRIVATE_LOBBY_MODE: advertising is stripped from the
+      // friends-and-classmates build. Ads stay off unconditionally — the
+      // HomepagePromos/InGamePromo early-returns, Admiral payload and the
+      // adblock watcher never start. See docs/PRIVATE_LOBBY_MODE.md.
+      window.adsEnabled = false;
       // Ad-eligible users only: paid/adfree users must never load Admiral (its
       // adblock popup fires autonomously once the payload runs). Start watching
       // adblock state; once a blocker is ever detected the in-game ad is
@@ -1549,8 +1550,18 @@ class Client {
     // One resolution for the whole join: the name and the verified badge have
     // to describe the same decision, so they are read together rather than
     // asked for separately.
+    //
+    // PRIVATE_LOBBY_MODE: the no-account private menu owns the nickname when
+    // it holds a valid one; the account input is the fallback. The server
+    // stays authoritative (trim + clamp + room disambiguation in Worker.ts).
+    const privateMenu = document.querySelector(
+      "private-lobby-menu",
+    ) as unknown as { currentNickname(): string | null } | null;
+    const privateMenuName = privateMenu?.currentNickname() ?? null;
     const resolvedName =
-      this.usernameInput?.resolvedName() ?? fallbackPlayerName();
+      privateMenuName !== null
+        ? { name: privateMenuName, verified: false }
+        : (this.usernameInput?.resolvedName() ?? fallbackPlayerName());
     const newLobbyHandle = joinLobby(this.eventBus, {
       gameID: lobby.gameID,
       cosmetics: await getPlayerCosmeticsRefs({

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { renderTroops } from "../../client/Utils";
 import { ArmyAttackModifiers, AttackLogicInput } from "../configuration/Config";
 import { escalationLevelForGame } from "../Escalation";
+import { airDefensePercentForTile } from "./air/AirRegionExecution";
 import type { Army } from "../game/Army";
 import {
   attackerLossDivisor,
@@ -26,6 +27,12 @@ import {
   UnitType,
 } from "../game/Game";
 import { GameMap, TileRef } from "../game/GameMap";
+import {
+  perkBonusFor,
+  XP_FOR_BATTLE_WON,
+  XP_FOR_DEFENSE_HELD,
+  xpForCasualties,
+} from "../game/Progression";
 import { PseudoRandom } from "../PseudoRandom";
 import { execSnapshotType } from "../snapshot/ExecutionSnapshot";
 import type {
@@ -66,6 +73,16 @@ export class AttackExecution implements Execution {
   // Reusable neighbor buffers to avoid closures/allocation in hot loops.
   private nbuf: TileRef[] = [0, 0, 0, 0];
   private nbuf2: TileRef[] = [0, 0, 0, 0];
+
+  // Match XP (Prompt 6), accumulated for the life of this offensive and paid
+  // once at a terminal path. Awarding per tile would floor most single-tile
+  // casualty batches to zero XP; batching here means a long fight pays out for
+  // what it actually cost. Both sides' casualties count: the attacker earns for
+  // destroying enemy military strength, the defender for holding the line.
+  private defenderCasualties = 0;
+  private attackerCasualties = 0;
+  private tilesConquered = 0;
+  private xpAwarded = false;
 
   constructor(
     private startTroops: number | null = null,
@@ -265,11 +282,44 @@ export class AttackExecution implements Execution {
     this._owner.borderTiles().forEach((tile) => this.addNeighbors(tile));
   }
 
+  /**
+   * Pay out this offensive's match XP (Prompt 6). Called from every terminal
+   * path, exactly once, guarded by `xpAwarded` so a defensive no-op (an attack
+   * that never landed and had no casualties) pays nothing.
+   *
+   * Three rewards, all for behavior that took deliberate action:
+   *   - destroying enemy military strength, from casualties inflicted
+   *   - winning battles, from actually taking ground
+   *   - defending successfully, credited to the defender when they still hold
+   *     land after the offensive ended
+   * An ally never appears here: attacks on friendlies are refused in init()
+   * and the friendly check in tick() retreats first, so there is no path by
+   * which two allies hand each other XP.
+   */
+  private awardMatchXP(): void {
+    if (this.xpAwarded) return;
+    this.xpAwarded = true;
+
+    const inflicted = xpForCasualties(this.defenderCasualties);
+    if (inflicted > 0) this._owner.addMatchXP(inflicted);
+    if (this.tilesConquered > 0) this._owner.addMatchXP(XP_FOR_BATTLE_WON);
+
+    // The defender's reward is for repelling something, so it needs a real
+    // attacker on the other side and a defender still standing on land.
+    if (!this.target.isPlayer()) return;
+    const defender = this.target;
+    if (!defender.isAlive() || defender.numTilesOwned() <= 0) return;
+    const taken = xpForCasualties(this.attackerCasualties);
+    if (taken > 0) defender.addMatchXP(taken);
+    if (this.defenderCasualties > 0) defender.addMatchXP(XP_FOR_DEFENSE_HELD);
+  }
+
   private retreat(malusPercent = 0) {
     if (this.attack === null) {
       throw new Error("Attack not initialized");
     }
 
+    this.awardMatchXP();
     const deaths = this.attack.troops() * (malusPercent / 100);
     if (deaths) {
       this.mg.displayMessage(
@@ -329,7 +379,9 @@ export class AttackExecution implements Execution {
     if (!this.attack.isActive()) {
       this.active = false;
       // The attack was deleted underneath us (a sweep, or a merge we cannot
-      // be part of). Anything still on it is lost.
+      // be part of). Anything still on it is lost. The fight still happened,
+      // so whatever it cost both sides is paid out.
+      this.awardMatchXP();
       this.releaseArmy(false);
       return;
     }
@@ -348,6 +400,9 @@ export class AttackExecution implements Execution {
       if (troopCount < 1) {
         this.attack.delete();
         this.active = false;
+        // The offensive was destroyed mid-fight, but the casualties it caused
+        // and the ground it took were real, so both sides still get paid.
+        this.awardMatchXP();
         this.releaseArmy(false);
         return;
       }
@@ -387,10 +442,13 @@ export class AttackExecution implements Execution {
       tickBudget -= tickFraction;
       troopCount -= attackerTroopLoss;
       this.attack.setTroops(troopCount);
+      this.attackerCasualties += attackerTroopLoss;
+      this.defenderCasualties += defenderTroopLoss;
       if (targetPlayer) {
         targetPlayer.removeTroops(defenderTroopLoss);
       }
       this._owner.conquer(tileToConquer);
+      this.tilesConquered++;
       if (this.army !== null)
         this.recordArmyProgress(attackerTroopLoss, defenderTroopLoss);
       this.handleDeadDefender();
@@ -446,6 +504,17 @@ export class AttackExecution implements Execution {
     army.setOrder({ type: "hold" });
   }
 
+  /**
+   * Air superiority over the contested tile (Prompt 7.5), from the air war's
+   * own pass. Attached to the defender rather than folded into `perkDefensePercent`
+   * so the two sources stay legible: one is a doctrine perk the player chose,
+   * the other is the result of a regional fight happening right now.
+   */
+  private airDefensePercent(tile: TileRef): number {
+    if (!this.target.isPlayer()) return 0;
+    return airDefensePercentForTile(this.mg, this.target, tile);
+  }
+
   private attackLogicInput(
     attackTroops: number,
     tile: TileRef,
@@ -464,6 +533,8 @@ export class AttackExecution implements Execution {
         UnitType.DefensePost,
         defender.id(),
       );
+    const perks = this.perkModifiers();
+    const airPercent = defender === null ? 0 : this.airDefensePercent(tile);
     return {
       terrain: this.map.terrainType(tile),
       attackTroops,
@@ -481,6 +552,10 @@ export class AttackExecution implements Execution {
               isTraitor: defender.isTraitor(),
               isDisconnectedTeammate:
                 defender.isDisconnected() && this._owner.isOnSameTeam(defender),
+              ...(perks.perkDefensePercent === undefined
+                ? {}
+                : { perkDefensePercent: perks.perkDefensePercent }),
+              ...(airPercent <= 0 ? {} : { airDefensePercent: airPercent }),
             },
       defenderHasDefensePost,
       falloutRatio: this.mg.hasFallout(tile)
@@ -490,6 +565,35 @@ export class AttackExecution implements Execution {
       // Late-game pressure; 0 before the deadline (see Escalation).
       escalationLevel: escalationLevelForGame(this.mg),
       ...this.armyModifiers(),
+      // A perk-only attack still needs the whole attackerModifiers block; an
+      // army's composition/veterancy and the attacker's perks add together.
+      ...(perks.attackerModifiers === undefined
+        ? {}
+        : {
+            attackerModifiers: this.combineAttackModifiers(
+              perks.attackerModifiers,
+            ),
+          }),
+    };
+  }
+
+  /**
+   * Army composition/veterancy (Prompt 3.3) and progression perks (Prompt 6)
+   * both scale the same three numbers, on the same 100 = neutral scale, so they
+   * multiply: an armored veteran army led by a Blitz specialist bleeds less
+   * than either would alone.
+   */
+  private combineAttackModifiers(
+    perks: ArmyAttackModifiers,
+  ): ArmyAttackModifiers {
+    const army = this.armyModifiers().attackerModifiers;
+    if (army === undefined) return perks;
+    return {
+      lossDivisor: (army.lossDivisor * perks.lossDivisor) / 100,
+      defenderLossMultiplier:
+        (army.defenderLossMultiplier * perks.defenderLossMultiplier) / 100,
+      conquestCostMultiplier:
+        (army.conquestCostMultiplier * perks.conquestCostMultiplier) / 100,
     };
   }
 
@@ -518,6 +622,40 @@ export class AttackExecution implements Execution {
         defenderLossMultiplier: Math.max(50, offenseMultiplier(stats)),
         conquestCostMultiplier: Math.max(25, conquestCost),
       },
+    };
+  }
+
+  /**
+   * Progression perks (Prompt 6) folded into the same per-tile combat math.
+   *
+   * Blitz ("offense") makes an attacker bleed less per tile and take ground
+   * faster; Fortress ("defense") makes a defender bleed less. Both ride the
+   * 100 = neutral scale. The floors keep a stacked perk from making an attack
+   * free or a defense invulnerable.
+   *
+   * Returns `{}` when neither side has perks, so an ordinary attack between
+   * two perk-less players resolves exactly as it did before progression existed.
+   */
+  private perkModifiers(): {
+    attackerModifiers?: ArmyAttackModifiers;
+    perkDefensePercent?: number;
+  } {
+    const offense = perkBonusFor(this._owner, "offense");
+    const defense = this.target.isPlayer()
+      ? perkBonusFor(this.target, "defense")
+      : 0;
+    if (offense === 0 && defense === 0) return {};
+    return {
+      ...(offense > 0
+        ? {
+            attackerModifiers: {
+              lossDivisor: 100 + offense,
+              defenderLossMultiplier: 100 + offense,
+              conquestCostMultiplier: 100 + offense,
+            },
+          }
+        : {}),
+      ...(defense > 0 ? { perkDefensePercent: defense } : {}),
     };
   }
 
@@ -638,6 +776,10 @@ export class AttackExecution implements Execution {
       targetID: this._targetID,
       sourceTile: this.sourceTile,
       removeTroops: this.removeTroops,
+      defenderCasualties: this.defenderCasualties,
+      attackerCasualties: this.attackerCasualties,
+      tilesConquered: this.tilesConquered,
+      xpAwarded: this.xpAwarded,
     });
   }
 
@@ -665,6 +807,10 @@ export class AttackExecution implements Execution {
     this._targetID = s.targetID;
     this.sourceTile = s.sourceTile;
     this.removeTroops = s.removeTroops;
+    this.defenderCasualties = s.defenderCasualties;
+    this.attackerCasualties = s.attackerCasualties;
+    this.tilesConquered = s.tilesConquered;
+    this.xpAwarded = s.xpAwarded;
   }
 }
 
@@ -691,16 +837,35 @@ const AttackExecutionStateSchema = z.object({
   targetID: z.string().nullable(),
   sourceTile: zTile().nullable(),
   removeTroops: z.boolean(),
+  // Match XP accumulators (Prompt 6, v3). An in-flight attack from an older
+  // snapshot simply forfeits its payout; awardMatchXP() then pays only the
+  // battle-win reward for ground it already took.
+  // Floats: the per-tile troop losses these sum are fractional, and rounding
+  // each one on the way in would throw away most of a small fight. Only the
+  // XP conversion floors, and it does so once, at payout.
+  defenderCasualties: zNum(),
+  attackerCasualties: zNum(),
+  tilesConquered: zInt(),
+  xpAwarded: z.boolean(),
 });
 type AttackExecutionState = z.infer<typeof AttackExecutionStateSchema>;
 
 export const AttackExecutionSnapshot = execSnapshotType({
   name: "Attack",
-  version: 2,
+  version: 3,
   schema: AttackExecutionStateSchema,
   migrations: {
     // v1 predates armies: every attack was a click, so none of them had one.
     1: (d: Record<string, unknown>) => ({ ...d, army: null }),
+    // v2 predates match XP: no attack had tracked casualties or ground, and an
+    // already-terminal one must never pay twice.
+    2: (d: Record<string, unknown>) => ({
+      ...d,
+      defenderCasualties: 0,
+      attackerCasualties: 0,
+      tilesConquered: 0,
+      xpAwarded: !d.active,
+    }),
   },
   cls: () => AttackExecution,
 });

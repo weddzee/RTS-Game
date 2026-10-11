@@ -10,6 +10,7 @@ import { z } from "zod";
 import { CloseCode, CloseReason } from "../core/CloseCodes";
 import { GameEnv } from "../core/configuration/Config";
 import { GameType } from "../core/game/Game";
+import { matchPacingGameConfigPatch } from "../core/MatchPacing";
 import {
   ClientMessage,
   ClientPlatformSchema,
@@ -40,6 +41,13 @@ import { resolveVerifiedJoin } from "./Privilege";
 
 import { MapPlaylist } from "./MapPlaylist";
 import { setNoStoreHeaders } from "./NoStoreHeaders";
+import {
+  authoritativeNickname,
+  disambiguateUsername,
+  generateRoomCode,
+  parsePrivateRoomOptions,
+  PrivateRoomRegistry,
+} from "./PrivateRooms";
 import { PrivilegeRefresher } from "./PrivilegeRefresher";
 import { startRankedCheckinLoops } from "./RankedCheckin";
 import { rejoinOrClose } from "./Rejoin";
@@ -55,6 +63,11 @@ import { stripWorkerPrefix } from "./WorkerPathPrefix";
 const workerId = ServerEnv.workerId() ?? 0;
 const log = logger.child({ comp: `w_${workerId}` });
 const playlist = new MapPlaylist();
+// PRIVATE_LOBBY_MODE: room-code -> game aliases for this worker. Codes are
+// minted with worker affinity (workerIndex(code) === workerId, same trick
+// as game ids), so resolution never crosses workers. Stale entries are
+// dropped lazily when a resolve finds their game gone.
+const privateRooms = new PrivateRoomRegistry();
 
 // Worker setup
 export async function startWorker() {
@@ -263,6 +276,121 @@ export async function startWorker() {
       ...game.gameInfo(),
       workerIndex: workerId,
       workerPath: ServerEnv.workerPath(id),
+    });
+  });
+
+  // PRIVATE_LOBBY_MODE: create a private game and mint a 6-character room
+  // code for it in one call. Same auth and validation as /api/create_game,
+  // plus an optional pacing preset that maps to maxTimerValue/goldMultiplier
+  // (see src/core/MatchPacing.ts). The response carries both the gameID
+  // (the join secret on the wire) and the roomCode (the human alias).
+  app.post("/api/create_private_game", async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res
+        .status(400)
+        .json({ error: "Authorization header required to create a game" });
+    }
+    const auth = await verifyClientToken(
+      authHeader.substring("Bearer ".length),
+    );
+    if (auth.type !== "success") {
+      log.warn(`Invalid creator token: ${auth.message}`);
+      return res.status(401).json({ error: "Invalid creator token" });
+    }
+    const creatorPersistentID = auth.persistentId;
+
+    const parsed = z
+      .object({
+        config: CreateGameInputSchema.optional(),
+        options: z.unknown().optional(),
+      })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: z.prettifyError(parsed.error) });
+    }
+    const options = parsePrivateRoomOptions(parsed.data.options) ?? {};
+    if (parsed.data.config?.gameType === GameType.Public) {
+      return res
+        .status(400)
+        .json({ error: "Cannot create public games via this endpoint" });
+    }
+
+    const pacing = matchPacingGameConfigPatch(options.durationPreset);
+    const gc = {
+      ...parsed.data.config,
+      maxTimerValue: pacing.maxTimerValue,
+      goldMultiplier: pacing.goldMultiplier,
+    };
+    if (options.bots !== undefined) gc.bots = options.bots;
+
+    const id = ServerEnv.generateGameIdForWorker(workerId);
+    if (id === null) {
+      log.warn(`Failed to mint game id on worker ${workerId}`);
+      return res.status(500).json({ error: "Could not allocate game id" });
+    }
+
+    const game = gm.createGame(id, gc, creatorPersistentID);
+    if (game === null) {
+      log.warn(`cannot create game, id ${id} already exists`);
+      return res.status(409).json({ error: "Game ID already exists" });
+    }
+
+    // Mint a code with affinity for this worker so clients can route
+    // /api/room/:code straight here (same hashing as game ids).
+    let record = null;
+    for (let attempt = 0; attempt < 100 && record === null; attempt++) {
+      const code = generateRoomCode();
+      if (ServerEnv.workerIndex(code) !== workerId) continue;
+      if (privateRooms.resolve(code) !== null) continue;
+      try {
+        record = privateRooms.createForGame(
+          id,
+          creatorPersistentID,
+          options,
+          () => code,
+        );
+      } catch {
+        record = null;
+      }
+    }
+    if (record === null) {
+      log.warn(`Failed to mint room code on worker ${workerId}`);
+      return res.status(500).json({ error: "Could not allocate room code" });
+    }
+
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    const clientIP = req.ip || req.socket.remoteAddress || "unknown";
+    log.info(
+      `Worker ${workerId}: IP ${ipAnonymize(clientIP)} creating private room ${record.roomCode} (game ${id}), creator: ${creatorPersistentID.substring(0, 8)}...`,
+    );
+    res.json({
+      ...game.gameInfo(),
+      roomCode: record.roomCode,
+      workerIndex: workerId,
+      workerPath: ServerEnv.workerPath(id),
+    });
+  });
+
+  // PRIVATE_LOBBY_MODE: resolve a room code to its game. 404 with a stable
+  // room_not_found error for unknown, malformed, or expired codes so the
+  // menu can show a clean message without opening a socket.
+  app.get("/api/room/:code", (req, res) => {
+    const record = privateRooms.resolve(req.params.code ?? "");
+    if (record === null) {
+      return res.status(404).json({ error: "room_not_found" });
+    }
+    const game = gm.game(record.gameID);
+    if (game === null) {
+      privateRooms.removeByGame(record.gameID);
+      return res.status(404).json({ error: "room_not_found" });
+    }
+    res.json({
+      roomCode: record.roomCode,
+      gameID: record.gameID,
+      workerPath: ServerEnv.workerPath(record.gameID),
+      hasStarted: game.hasStarted(),
+      options: record.options,
     });
   });
 
@@ -702,6 +830,27 @@ export async function startWorker() {
           )
         ) {
           return;
+        }
+
+        // PRIVATE_LOBBY_MODE: the server owns the accepted nickname. Trim
+        // and clamp to the 20-character menu cap (charset and non-blank are
+        // already enforced by the wire UsernameSchema). Duplicate nicknames
+        // inside a room-code game get a visible " 2" suffix (wire-safe
+        // characters only) so the roster never shows two identical names.
+        // Reconnects bypass this: a successful rejoin above already restored
+        // the stored identity.
+        username = authoritativeNickname(username);
+        {
+          const game = gm.game(clientMsg.gameID);
+          if (
+            game !== null &&
+            privateRooms.codeForGame(clientMsg.gameID) !== null
+          ) {
+            username = disambiguateUsername(
+              game.activeClients().map((c) => c.username),
+              username,
+            );
+          }
         }
 
         let flares: string[] | undefined;

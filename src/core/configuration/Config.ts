@@ -13,6 +13,13 @@ import {
 } from "../Escalation";
 import { DoomsdayClockSpeed } from "../game/DoomsdayClock";
 import {
+  FACTORY_CONSTRUCTION_COOLDOWN_TICKS,
+  FACTORY_MAX_LEVEL,
+  FACTORY_MAX_PER_PLAYER,
+  factoryConstructionTicks,
+  FactoryType,
+} from "../game/Factory";
+import {
   Difficulty,
   Game,
   GameType,
@@ -27,7 +34,9 @@ import {
   UnitInfo,
   UnitType,
 } from "../game/Game";
+import { perkBonusFor } from "../game/Progression";
 import { UserSettings } from "../game/UserSettings";
+import { matchPacingXpPercent } from "../MatchPacing";
 import { GameConfig, TeamCountConfig } from "../Schemas";
 import { NukeType } from "../StatsSchemas";
 import { assertNever, sigmoid, toInt, within } from "../Util";
@@ -107,12 +116,29 @@ export function parseGameEnv(value: string | undefined): GameEnv {
  * exactly as it did before armies existed.
  */
 export interface ArmyAttackModifiers {
-  /** Divisor on the attacker's troop loss per tile. Above 100 bleeds less. */
+  /** Divisor on the attacker's troop loss per tile. Above 100 bleed less. */
   lossDivisor: number;
   /** Multiplier on the defender's troop loss. Offensive damage. */
   defenderLossMultiplier: number;
   /** Multiplier on a tile's conquest cost. Breakthrough; above 100 is faster. */
   conquestCostMultiplier: number;
+}
+
+/**
+ * Per-player combat modifiers from applied progression perks (Prompt 6), on
+ * the same 100 = neutral scale as ArmyAttackModifiers. Separate from that type
+ * because the two come from different places and must be combined, never
+ * confused: army composition/veterancy for an army's offensive, perk bonuses
+ * for whoever is attacking or defending.
+ *
+ * A perk-aware attack passes both; an ordinary click-to-attack between two
+ * perk-less players passes neither and resolves exactly as it always did.
+ */
+export interface PerkAttackModifiers {
+  /** Divisor on the DEFENDER's troop loss. Fortress: above 100 they bleed less. */
+  defenderLossDivisor: number;
+  /** Divisor on the ATTACKER's troop loss. Fortress does not help here. */
+  attackerLossDivisor: number;
 }
 
 export interface AttackLogicInput {
@@ -127,6 +153,15 @@ export interface AttackLogicInput {
     isTraitor: boolean;
     /** Defender is disconnected and on the attacker's team. */
     isDisconnectedTeammate: boolean;
+    /** Defender's applied perks (Prompt 6). Absent = no perks. */
+    perkDefensePercent?: number;
+    /**
+     * Defender's air superiority in the region holding this tile (Prompt 7.5),
+     * as a percent. Absent = no wings overhead. A small divisor on the
+     * defender's losses: a contested sky tilts a ground fight, it does not
+     * decide it.
+     */
+    airDefensePercent?: number;
   } | null;
   /** A defense post owned by the defender is in range of the tile. */
   defenderHasDefensePost: boolean;
@@ -716,7 +751,12 @@ export class Config {
             UnitType.Factory,
             UnitType.Port,
           ),
-          constructionDuration: this.instantBuild() ? 0 : 2 * 10,
+          // Base duration is Civilian/Standard; ConstructionExecution refines
+          // per factory type via factoryConstructionDuration(). Pacing-aware,
+          // never hard-coded when pacing config exists (5.2).
+          constructionDuration: this.factoryConstructionDuration(
+            FactoryType.Civilian,
+          ),
           upgradable: true,
         };
         break;
@@ -1031,6 +1071,20 @@ export class Config {
     if (armyMods !== undefined) {
       defenderTroopLoss *= armyMods.defenderLossMultiplier / 100;
     }
+    // Fortress (Prompt 6): a defender's own defense perks cut what they lose
+    // per tile. Floored so a stacked defense perk can never make them
+    // invulnerable. This also lowers the attacker's cost, because the attacker's
+    // loss is partly a function of the defender's troop density — a fortified
+    // wall is cheaper to break into as well as cheaper to hold.
+    if (defender.perkDefensePercent !== undefined) {
+      defenderTroopLoss *= 100 / (100 + defender.perkDefensePercent);
+    }
+    // Air Power (Prompt 7.5): a defender holding its region skies loses fewer
+    // troops per tile. Small on purpose and applied after the Fortress perk, so
+    // the two stack without either being able to make a tile free.
+    if (defender.airDefensePercent !== undefined) {
+      defenderTroopLoss *= 100 / (100 + defender.airDefensePercent);
+    }
 
     // Two ratios drive the attacker's loss: how outnumbered the attack is
     // (defender army / attack stack, clamped: bigger pushes pay less per
@@ -1118,7 +1172,7 @@ export class Config {
   }
 
   maxTroops(player: Player | PlayerView): number {
-    const maxTroops =
+    const base =
       player.type() === PlayerType.Human && this.hasInfiniteTroopsFor(player)
         ? 1_000_000_000
         : 2 * (pow(player.numTilesOwned(), 0.6) * 1000 + 50000) +
@@ -1128,6 +1182,17 @@ export class Config {
             .map((city) => city.level())
             .reduce((a, b) => a + b, 0) *
             this.cityTroopIncrease();
+
+    // Logistics (Prompt 6): the Logistics family's supply perks raise the
+    // ceiling on the 100 = neutral scale, applied to the base before the
+    // per-type divisors below so it never changes the Bot/Nation ratios.
+    //
+    // At zero the base is used untouched: a perk-less player must keep the
+    // exact double it always had, and `x * 100 / 100` is not `x` for every
+    // float.
+    const supplyBonus = perkBonusFor(player, "supply");
+    const maxTroops =
+      supplyBonus > 0 ? base * ((100 + supplyBonus) / 100) : base;
 
     if (player.type() === PlayerType.Bot) {
       return maxTroops / 3;
@@ -1187,6 +1252,12 @@ export class Config {
 
     // Late-game pressure accelerates production (bounded in Balance).
     toAdd = escalatedProduction(toAdd, escalationLevel);
+
+    // Mass Assault (Prompt 6): manpower perks raise the reinforcement rate.
+    // Again skipped at zero, so a perk-less player generates the identical
+    // float it always did.
+    const manpowerBonus = perkBonusFor(player, "manpower");
+    if (manpowerBonus > 0) toAdd *= (100 + manpowerBonus) / 100;
 
     return Math.min(player.troops() + toAdd, max) - player.troops();
   }
@@ -1390,5 +1461,94 @@ export class Config {
 
   allianceExtensionPromptOffset(): number {
     return 300; // 30 seconds before expiration
+  }
+
+  // --- Factories (Prompt 5) ------------------------------------------------
+  //
+  // Pacing is read from the wire-carried GameConfig (maxTimerValue), never
+  // hard-coded: rapid (10 min) builds faster and produces more, extended
+  // (20 min) slower/less, standard/sandbox are the 1.0 baseline. Integer
+  // percents keep the sim deterministic.
+
+  /** Construction-speed multiplier as integer percent (100 = Standard). */
+  factoryConstructionSpeedPercent(): number {
+    const minutes = this._gameConfig.maxTimerValue;
+    if (minutes === 10) return 150; // rapid
+    if (minutes === 20) return 90; // extended
+    return 100; // standard (15), sandbox (null), or custom
+  }
+
+  /** Factory output multiplier as integer percent (100 = Standard). */
+  factoryOutputPacingPercent(): number {
+    const minutes = this._gameConfig.maxTimerValue;
+    if (minutes === 10) return 150; // rapid: DOMAIN factories 1.5
+    if (minutes === 20) return 90; // extended: DOMAIN factories 0.9
+    return 100;
+  }
+
+  /**
+   * Factory output percent for one player: the pacing baseline plus their
+   * Industry perks. The Air Power family multiplies aircraft capacity instead,
+   * so a player investing in air still sees their air factories grow.
+   */
+  factoryOutputPacingPercentFor(player?: Player | PlayerView): number {
+    return this.factoryOutputPacingPercent() + perkBonusFor(player, "industry");
+  }
+
+  // --- Match progression (Prompt 6) ----------------------------------------
+
+  /**
+   * Match-XP multiplier as an integer percent (100 = Standard).
+   *
+   * Read from MatchPacing, the single table that owns every pacing multiplier,
+   * rather than restated here — the factory methods above predate it and have
+   * their own literals, but new multipliers must not add a second source of
+   * truth. Rapid (10 min) hands out XP faster so the seven levels still arrive
+   * across a shorter match; Extended (20 min) hands out less per event so a
+   * player does not max out halfway through a long game.
+   */
+  xpPacingPercent(): number {
+    return matchPacingXpPercent(this._gameConfig.maxTimerValue);
+  }
+
+  /** Ticks to construct a factory of the given type (5.2). */
+  factoryConstructionDuration(
+    factoryType: FactoryType,
+    player?: Player | PlayerView,
+  ): number {
+    return factoryConstructionTicks(
+      factoryType,
+      this.factoryConstructionSpeedPercentFor(player),
+      this.instantBuild(),
+    );
+  }
+
+  /**
+   * Construction-speed percent for one player: the pacing baseline plus the
+   * Industry "rapid construction" perk. Integer percents, so a perk of +25
+   * turns a 100% match into 125%.
+   */
+  private factoryConstructionSpeedPercentFor(
+    player?: Player | PlayerView,
+  ): number {
+    return (
+      this.factoryConstructionSpeedPercent() +
+      perkBonusFor(player, "construction")
+    );
+  }
+
+  /** Max factories (unit count, not levels) one player may own. */
+  factoryMaxPerPlayer(): number {
+    return FACTORY_MAX_PER_PLAYER;
+  }
+
+  /** Ticks a player must wait between factory constructions (5.2). */
+  factoryConstructionCooldown(): number {
+    return FACTORY_CONSTRUCTION_COOLDOWN_TICKS;
+  }
+
+  /** Max factory level (5.6): 1-3, no infinite scaling. */
+  factoryMaxLevel(): number {
+    return FACTORY_MAX_LEVEL;
   }
 }

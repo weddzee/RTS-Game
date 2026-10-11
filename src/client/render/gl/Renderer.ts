@@ -29,10 +29,16 @@ import type {
   TerrainRect,
   UnitState,
 } from "../types";
+import type {
+  AirMissionLine,
+  AirRegionOverlay,
+  AirWingMarker,
+} from "../types/AirWingMarker";
 import type { ArmyMarker } from "../types/ArmyMarker";
 import type { BattlePlanStroke } from "../types/BattlePlan";
 import { Camera } from "./Camera";
 import { GLUnavailableError, initGL } from "./initGL";
+import { AirWingPass } from "./passes/AirWingPass";
 import { ArmyMarkerPass } from "./passes/ArmyMarkerPass";
 import { BarPass } from "./passes/BarPass";
 import { BorderComputePass } from "./passes/BorderComputePass";
@@ -156,6 +162,8 @@ export class GPURenderer {
   private smallPlayerGlowPass: SmallPlayerGlowPass;
   /** Army markers (Prompt 3). Own pass: drawn above units, below text. */
   private armyMarkerPass: ArmyMarkerPass;
+  /** Air region overlay, wing icons and mission lines (Prompt 7.8). */
+  private airWingPass: AirWingPass;
   private inSpawnPhase = false;
 
   // Map-layer passes keyed by layer id, drawn between terrain and territory.
@@ -603,6 +611,7 @@ export class GPURenderer {
     this.nukeTrajectoryPass = new NukeTrajectoryPass(gl, this.settings);
     this.nukeTelegraphPass = new NukeTelegraphPass(gl, this.settings);
     this.armyMarkerPass = new ArmyMarkerPass(gl, this.settings.armyMarker);
+    this.airWingPass = new AirWingPass(gl, this.settings.airWing);
 
     // --- Scene capture target (for night composite) ---
     const sceneTex = gl.createTexture()!;
@@ -1136,6 +1145,17 @@ export class GPURenderer {
     this.armyMarkerPass.update(markers);
   }
 
+  /** Replace the whole air layer. See AirWingPass.update. */
+  updateAirWings(data: {
+    regions: AirRegionOverlay[];
+    markers: AirWingMarker[];
+    lines: AirMissionLine[];
+  }): void {
+    this.airWingPass.update(data);
+  }
+
+  
+
   /** Replace the drawn battle plans. See BattlePlanPass.setStrokes. */
   updateBattlePlanStrokes(strokes: BattlePlanStroke[]): void {
     this.battlePlanPass.setStrokes(strokes);
@@ -1433,7 +1453,12 @@ export class GPURenderer {
     if (pe.trail) this.trailPass.draw(cam);
     // Spiral vortexes sit above the plain trails, below the missiles that
     // trail them. Skipped in alt view â€” the strategic overlay stays effects-free.
-    if (!this.altView) this.spiralRibbonPass.draw(cam);
+if (!this.altView) this.spiralRibbonPass.draw(cam);
+    // The air layer goes down here, below units and structures: the region wash
+    // is a background read that would muddy the ground layer if it sat on top,
+    // and its icons and lines are the least urgent thing on the map. Gated on
+    // air mode, which is off by default.
+    if (pe.airWing) this.airWingPass.draw(cam, zoom);
     if (pe.unit) this.unitPass.drawMissiles(cam);
     // Army markers sit above every unit and structure so a formation standing
     // behind a city is still findable, and below the FX and world text so the
@@ -1569,6 +1594,7 @@ export class GPURenderer {
     this.nukeTrajectoryPass.dispose();
     this.nukeTelegraphPass.dispose();
     this.armyMarkerPass.dispose();
+    this.airWingPass.dispose();
     this.barPass.dispose();
     disposeGPUResources(this.gl, this.res);
     this.gl.deleteTexture(this.paletteTex);

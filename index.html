@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
-    <title data-i18n="main.title">OpenFront (ALPHA)</title>
+    <title data-i18n="main.title">PROJECT_NAME (ALPHA)</title>
     <link rel="manifest" href="<%- manifestHref %>" />
     <link rel="icon" type="image/svg+xml" href="<%- faviconHref %>" />
 
@@ -219,6 +219,10 @@
       window.ramp.passiveMode = true;
     </script>
 
+    <!-- PRIVATE_LOBBY_MODE: advertising/analytics stripped from the
+      friends-and-classmates build. googletag + gtag blocks disabled;
+      all window.ramp/googletag uses are guarded, so the bundle runs
+      unchanged. Re-enable by restoring this block.
     <script>
       window.googletag = window.googletag || { cmd: [] };
       googletag.cmd.push(function () {
@@ -226,7 +230,6 @@
       });
     </script>
 
-    <!-- Analytics -->
     <script
       async
       src="https://www.googletagmanager.com/gtag/js?id=AW-16702609763"
@@ -241,7 +244,6 @@
       gtag("js", new Date());
       gtag("config", "AW-16702609763");
     </script>
-    <!-- Google tag (gtag.js) -->
     <script
       async
       src="https://www.googletagmanager.com/gtag/js?id=G-WQGQQ8RDN4"
@@ -255,6 +257,7 @@
 
       gtag("config", "G-WQGQQ8RDN4");
     </script>
+    -->
   </head>
 
   <body
@@ -474,6 +477,7 @@
 
     <!-- Game modals and overlays -->
     <emoji-table></emoji-table>
+    <credits-modal></credits-modal>
     <build-menu></build-menu>
     <win-modal></win-modal>
     <new-lobby-prompt></new-lobby-prompt>
@@ -491,6 +495,15 @@
          document.querySelector("user-setting"), which takes the first match. -->
     <user-setting id="game-settings"></user-setting>
     <player-panel></player-panel>
+    <!-- Army panel (Prompt 3): pinned to the bottom-left so it never covers
+         the map centre, and hidden by itself when no army is selected. -->
+    <div class="fixed bottom-2 left-2 z-1000 flex flex-col-reverse">
+      <army-panel></army-panel>
+      <air-wing-panel></air-wing-panel>
+    </div>
+    <!-- Prompt 10.2: top resource bar (gold, troops, aircraft, level, clock).
+         Hidden by itself until the local player has spawned. -->
+    <resource-bar></resource-bar>
     <spawn-timer></spawn-timer>
     <immunity-timer></immunity-timer>
     <in-game-promo></in-game-promo>
@@ -591,13 +604,16 @@
       });
     </script>
 
-    <!-- Analytics -->
+    <!-- PRIVATE_LOBBY_MODE: beacon + Playwire ad loader disabled (see
+      note above). Restore to re-enable.
     <script
       defer
       src="https://static.cloudflareinsights.com/beacon.min.js"
       data-cf-beacon='{"token": "03d93e6fefb349c28ee69b408fa25a13"}'
     ></script>
+    -->
     <script type="module" src="/src/client/Main.ts"></script>
+    <!-- PRIVATE_LOBBY_MODE: Playwire ramp loader disabled (see note above).
     <footer>
       <script
         data-cfasync="false"
@@ -605,5 +621,6 @@
         src="//cdn.intergient.com/1025558/75940/ramp.js"
       ></script>
     </footer>
+    -->
   </body>
 </html>

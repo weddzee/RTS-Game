@@ -30,6 +30,11 @@ import type {
   TerrainRect,
   UnitState,
 } from "../types";
+import type {
+  AirMissionLine,
+  AirRegionOverlay,
+  AirWingMarker,
+} from "../types/AirWingMarker";
 import type { ArmyMarker } from "../types/ArmyMarker";
 import type { BattlePlanStroke } from "../types/BattlePlan";
 import type { SpawnCenter } from "./passes/SpawnOverlayPass";
@@ -304,6 +309,21 @@ export class MapRenderer {
   updateArmyMarkers(markers: ArmyMarker[]): void {
     this.renderer?.updateArmyMarkers(markers);
   }
+
+  /**
+   * Replace the air layer: region overlay, wing icons, mission lines (Prompt
+   * 7.8). Empty lists clear it. Pushing data is independent of air mode — the
+   * pass decides whether to draw — so a toggle never needs a data resend.
+   */
+  updateAirWings(data: {
+    regions: AirRegionOverlay[];
+    markers: AirWingMarker[];
+    lines: AirMissionLine[];
+  }): void {
+    this.renderer?.updateAirWings(data);
+  }
+
+  
 
   /**
    * Replace the drawn battle plans (Prompt 4.3). Empty array turns the pass off.

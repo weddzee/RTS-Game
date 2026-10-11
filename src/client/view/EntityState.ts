@@ -67,6 +67,9 @@ export function unitStateFromUpdate(u: UnitUpdate): UnitState {
     samUpgradeStartRange: u.samUpgrade?.startRange ?? null,
     samUpgradeTargetLevel: u.samUpgrade?.targetLevel ?? null,
     samUpgradeDuration: u.samUpgrade?.duration ?? null,
+    factoryType: u.factoryType ?? null,
+    factoryEfficiency: u.factoryEfficiency ?? null,
+    factoryDisabled: u.factoryDisabled ?? null,
   };
 }
 
@@ -100,6 +103,9 @@ export function applyUnitUpdateInPlace(target: UnitState, u: UnitUpdate): void {
   target.samUpgradeStartRange = u.samUpgrade?.startRange ?? null;
   target.samUpgradeTargetLevel = u.samUpgrade?.targetLevel ?? null;
   target.samUpgradeDuration = u.samUpgrade?.duration ?? null;
+  target.factoryType = u.factoryType ?? null;
+  target.factoryEfficiency = u.factoryEfficiency ?? null;
+  target.factoryDisabled = u.factoryDisabled ?? null;
 }
 
 export function gamePlayerTypeToEnum(t: PlayerType): PlayerTypeEnum {
@@ -178,6 +184,13 @@ export function playerStateFromUpdate(pu: PlayerUpdate): PlayerState {
     outgoingAllianceRequests: pu.outgoingAllianceRequests!.slice(),
     alliances: pu.alliances!,
     outgoingEmojis: pu.outgoingEmojis!,
+    // Progression (Prompt 6): default to a fresh Level 1 match so a payload
+    // predating these fields still renders rather than showing NaN.
+    matchLevel: pu.matchLevel ?? 1,
+    matchXP: pu.matchXP ?? 0,
+    pendingPerks: pu.pendingPerks?.slice() ?? [],
+    appliedPerks: pu.appliedPerks?.slice() ?? [],
+    airCapacity: pu.airCapacity ?? 0,
   };
 }
 

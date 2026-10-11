@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Config } from "../configuration/Config";
+import { escalationLevelForGame } from "../Escalation";
 import {
   Cell,
   Execution,
@@ -94,9 +95,14 @@ export class PlayerExecution implements Execution {
       return;
     }
 
-    const troopInc = this.config.troopIncreaseRate(this.player);
+    // Late-game pressure accelerates production past the deadline.
+    const escalation = escalationLevelForGame(this.mg);
+    const troopInc = this.config.troopIncreaseRate(this.player, escalation);
     this.player.addTroops(troopInc);
-    const goldFromWorkers = this.config.goldAdditionRate(this.player);
+    const goldFromWorkers = this.config.goldAdditionRate(
+      this.player,
+      escalation,
+    );
     this.player.addGold(goldFromWorkers);
 
     // Record stats

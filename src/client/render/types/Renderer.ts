@@ -93,6 +93,66 @@ export interface PlayerState {
   outgoingAllianceRequests: string[];
   alliances: AllianceData[];
   outgoingEmojis: EmojiData[];
+  /** Match level, 1-7 (Prompt 6). */
+  matchLevel: number;
+  /** Cumulative match XP, pacing-scaled at award time. */
+  matchXP: number;
+  /** Perk options awaiting a pick; empty when nothing is pending. */
+  pendingPerks: string[];
+  /** Applied perk IDs, in pick order. */
+  appliedPerks: string[];
+  /** Banked aircraft production, whole points (Prompt 7.3). */
+  airCapacity: number;
+}
+
+// ---------------------------------------------------------------------------
+// Air wing overlay (Prompt 7.8)
+//
+// The air map layer. Three shapes, one per thing the spec asks the map to show:
+// the region overlay tinted by who holds the sky, one wing icon, and that wing's
+// mission line. None of it is a per-aircraft sprite — see types/AirWingMarker.
+// ---------------------------------------------------------------------------
+
+/** The air-region overlay: a rectangle covering one region. */
+export interface AirRegionOverlay {
+  /** Region id, so the panel and the pass name the same region. */
+  regionId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Share of the region's air war the leading side holds, 0..100. */
+  sharePercent: number;
+  /** Leading side's color, or null when nobody is flying in this region. */
+  color: { r: number; g: number; b: number } | null;
+  /** True when the region has aircraft on more than one side. */
+  contested: boolean;
+}
+
+/** One wing icon, drawn at the centre of the region it flies in. */
+export interface AirWingMarker {
+  wingId: number;
+  x: number;
+  y: number;
+  sizeTiles: number;
+  flags: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+/** A wing's mission line, from its home ground to the region it flies in. */
+export interface AirMissionLine {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  /** Half-width of the shaft in tiles; the arrowhead is drawn past the tip. */
+  widthTiles: number;
+  flags: number;
+  r: number;
+  g: number;
+  b: number;
 }
 
 export interface UnitState {
@@ -124,6 +184,11 @@ export interface UnitState {
   samUpgradeStartRange: number | null;
   samUpgradeTargetLevel: number | null;
   samUpgradeDuration: number | null;
+  // Factories (Prompt 5.5): compact map representation. Optional so older
+  // replays without them keep working; only set for Factory units.
+  factoryType?: string | null;
+  factoryEfficiency?: number | null;
+  factoryDisabled?: boolean | null;
 }
 
 /**

@@ -58,7 +58,18 @@ export function validateUsername(username: string): {
   isValid: boolean;
   error?: string;
 } {
-  // Checked ahead of the schema, which stays wide enough for archived records.
+  // Checked ahead of the schema. The wire UsernameSchema widened its
+  // minimum to 1 for private-lobby nicknames; this account-form rule stays
+  // pinned at MIN_USERNAME_LENGTH so the existing form behavior cannot
+  // drift with schema changes.
+  if (typeof username === "string" && username.length < MIN_USERNAME_LENGTH) {
+    return {
+      isValid: false,
+      error: translateText("username.too_short", {
+        min: MIN_USERNAME_LENGTH,
+      }),
+    };
+  }
   if (typeof username === "string" && username.length > MAX_USERNAME_LENGTH) {
     return {
       isValid: false,

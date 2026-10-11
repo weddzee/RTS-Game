@@ -145,6 +145,41 @@
   "account_settings_modal": {
     "title": "Account Settings"
   },
+  "air_wing_panel": {
+    "aircraft": "aircraft",
+    "close": "Close",
+    "destroyed": "Destroyed",
+    "effectiveness": "Effectiveness",
+    "engagements": "Engagements",
+    "experience": "Experience",
+    "losses": "Aircraft lost",
+    "mission": "Mission",
+    "missions": {
+      "airSuperiority": "Air superiority",
+      "intercept": "Intercept",
+      "strike": "Strike"
+    },
+    "need_production": "You need {cost} aircraft of production banked to raise a wing.",
+    "needs_air_factory": "Build an Air Factory first. Wings are raised and repaired from the aircraft it produces.",
+    "production": "Production: {aircraft} banked",
+    "raise": "Raise wing ({cost})",
+    "region": "Air region",
+    "save": "Save",
+    "strikes": "Strike sorties",
+    "targets": {
+      "airIndustry": "Air industry",
+      "groundArmy": "Ground armies",
+      "infrastructure": "Infrastructure",
+      "militaryIndustry": "Military industry"
+    },
+    "title": "Air Wings",
+    "types": {
+      "Bomber": "Bomber wing",
+      "Fighter": "Fighter wing"
+    },
+    "unassign": "Unassign",
+    "unassigned": "(unassigned)"
+  },
   "army_panel": {
     "apply": "Apply",
     "at_cap": "You already have the maximum of {cap} armies.",
@@ -1030,6 +1065,8 @@
   "graphics_setting": {
     "advanced_desc": "Fine-tune individual graphics options",
     "advanced_label": "Advanced settings",
+    "air_mode_desc": "Show air regions, wing icons and mission lines. Off keeps the region grid off the map until you want it",
+    "air_mode_label": "Air mode",
     "alt_view_fill_alpha_desc": "How opaque the relation-colored territory fill is while holding the alt-view key (Space)",
     "alt_view_fill_alpha_label": "Alt-view fill opacity",
     "background_color_desc": "Color of the area outside the map and impassable terrain.",
@@ -1889,6 +1926,73 @@
     "starting_gold": "Starting Gold",
     "title": "Join Lobby",
     "version_mismatch": "This game was created with a different version. Cannot join."
+  },
+  "progression": {
+    "choose_doctrine": "Choose a doctrine",
+    "choose_one": "Choose one:",
+    "decide_later": "Decide later",
+    "doctrines": {
+      "AirPower": "Air Power",
+      "Blitz": "Blitz",
+      "Fortress": "Fortress",
+      "Industry": "Industry",
+      "Logistics": "Logistics",
+      "MassAssault": "Mass Assault"
+    },
+    "level_badge": "LV {level}",
+    "level_up_title": "LEVEL UP — {level}",
+    "max_level": "Max level",
+    "perks": {
+      "air-doctrine": {
+        "desc": "Air factories build aircraft capacity faster.",
+        "name": "Air Doctrine"
+      },
+      "air-superiority": {
+        "desc": "Air superiority effectiveness increases sharply.",
+        "name": "Air Superiority"
+      },
+      "deep-battle": {
+        "desc": "Attacks break through faster and cost fewer troops.",
+        "name": "Deep Battle"
+      },
+      "field-depots": {
+        "desc": "Field depots raise your troop ceiling further.",
+        "name": "Field Depots"
+      },
+      "fortified-lines": {
+        "desc": "Fortified lines bleed fewer troops while defending.",
+        "name": "Fortified Lines"
+      },
+      "grand-citadel": {
+        "desc": "A grand citadel makes your defenses far harder to crack.",
+        "name": "Grand Citadel"
+      },
+      "mass-mobilization": {
+        "desc": "Reinforcements arrive faster.",
+        "name": "Mass Mobilization"
+      },
+      "rapid-advance": {
+        "desc": "Armies execute offensive plans faster.",
+        "name": "Rapid Advance"
+      },
+      "rapid-construction": {
+        "desc": "Structures and factories build noticeably faster.",
+        "name": "Rapid Construction"
+      },
+      "supply-lines": {
+        "desc": "Supply lines raise your troop ceiling.",
+        "name": "Supply Lines"
+      },
+      "total-war": {
+        "desc": "Total war greatly accelerates reinforcement flow.",
+        "name": "Total War"
+      },
+      "war-industry": {
+        "desc": "Military factories produce more.",
+        "name": "War Industry"
+      }
+    },
+    "xp_to_next": "{xp} XP to next level"
   },
   "public_game_modifier": {
     "compact_map": "Compact Map",

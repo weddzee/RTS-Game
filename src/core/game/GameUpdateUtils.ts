@@ -71,7 +71,12 @@ export function diffPlayerUpdate(
     emojiArrayEqual(prev.outgoingEmojis, next.outgoingEmojis) &&
     attackArrayMembershipEqual(prev.outgoingAttacks, next.outgoingAttacks) &&
     attackArrayMembershipEqual(prev.incomingAttacks, next.incomingAttacks) &&
-    allianceArrayEqual(prev.alliances, next.alliances)
+    allianceArrayEqual(prev.alliances, next.alliances) &&
+    prev.matchLevel === next.matchLevel &&
+    prev.matchXP === next.matchXP &&
+    prev.airCapacity === next.airCapacity &&
+    stringArrayEqual(prev.pendingPerks, next.pendingPerks) &&
+    stringArrayEqual(prev.appliedPerks, next.appliedPerks)
   ) {
     return null;
   }
@@ -158,6 +163,21 @@ export function diffPlayerUpdate(
     "alliances",
     allianceArrayEqual(prev.alliances, next.alliances),
   );
+  // Progression (Prompt 6). Both perk arrays are short and change a handful of
+  // times per match, so comparing them here is cheaper than adding them to the
+  // packed channel.
+  setIfDifferent("matchLevel", prev.matchLevel === next.matchLevel);
+  setIfDifferent("matchXP", prev.matchXP === next.matchXP);
+  setIfDifferent(
+    "pendingPerks",
+    stringArrayEqual(prev.pendingPerks, next.pendingPerks),
+  );
+  setIfDifferent(
+    "appliedPerks",
+    stringArrayEqual(prev.appliedPerks, next.appliedPerks),
+  );
+  // Aircraft (Prompt 7.3).
+  setIfDifferent("airCapacity", prev.airCapacity === next.airCapacity);
 
   return changed ? diff : null;
 }
@@ -215,6 +235,14 @@ export function applyStateUpdate(target: PlayerState, pu: PlayerUpdate): void {
   if (pu.alliances !== undefined) target.alliances = pu.alliances;
   if (pu.outgoingEmojis !== undefined)
     target.outgoingEmojis = pu.outgoingEmojis;
+  // Progression (Prompt 6).
+  if (pu.matchLevel !== undefined) target.matchLevel = pu.matchLevel;
+  if (pu.matchXP !== undefined) target.matchXP = pu.matchXP;
+  if (pu.pendingPerks !== undefined)
+    target.pendingPerks = pu.pendingPerks.slice();
+  if (pu.appliedPerks !== undefined)
+    target.appliedPerks = pu.appliedPerks.slice();
+  if (pu.airCapacity !== undefined) target.airCapacity = pu.airCapacity;
 }
 
 function numberArrayEqual(a?: number[], b?: number[]): boolean {

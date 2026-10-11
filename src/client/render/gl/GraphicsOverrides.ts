@@ -91,6 +91,9 @@ export const GraphicsOverridesSchema = z
         // Nuclear fallout effects: the broiling green territory bloom and its
         // light emission in day/night mode. Disable to improve performance.
         fallout: z.boolean(),
+        // Air mode (Prompt 7.8): the air-region overlay, wing icons and mission
+        // lines. Default off, so the base map is never flooded with the grid.
+        airWing: z.boolean(),
       })
       .partial(),
     terrain: z

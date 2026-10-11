@@ -56,6 +56,11 @@ function ps(overrides: Partial<PlayerState> = {}): PlayerState {
     outgoingAllianceRequests: [],
     alliances: [],
     outgoingEmojis: [],
+    matchLevel: 1,
+    matchXP: 0,
+    pendingPerks: [],
+    appliedPerks: [],
+    airCapacity: 0,
     ...overrides,
   };
 }

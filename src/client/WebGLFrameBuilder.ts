@@ -8,7 +8,12 @@ import {
   type NukeExplosionAttributes,
   type NukeExplosionType,
 } from "../core/CosmeticSchemas";
-import { PlayerType } from "../core/game/Game";
+import {
+  WING_MIN_EFFECTIVE_PERCENT,
+  WING_START_AIRCRAFT,
+} from "../core/game/Aircraft";
+import { FactoryType } from "../core/game/Factory";
+import { PlayerType, UnitType } from "../core/game/Game";
 import { getCachedCosmetics } from "./Cosmetics";
 import { buildTerrainRowSpans } from "./render/frame/derive/TerrainRowSpans";
 import { uploadFrameData } from "./render/frame/Upload";
@@ -23,6 +28,12 @@ import {
   MAX_NUKE_EXPLOSION_COLORS,
   type NukeExplosionRenderParams,
 } from "./render/types";
+import {
+  type AirMissionLine,
+  type AirRegionOverlay,
+  type AirWingMarker,
+  packAirWingFlags,
+} from "./render/types/AirWingMarker";
 import {
   type ArmyMarker,
   packArmyMarkerFlags,
@@ -70,6 +81,21 @@ const ARMY_STACK_SPREAD = 1.0472; // 60 degrees
 const ARMY_STACK_MAX_RADIUS = 1.6;
 /** Strength normalization floor, so a tiny army does not render as a speck. */
 const ARMY_STRENGTH_NORM_FLOOR = 0.08;
+
+// --- Air map layer (Prompt 7.8) --------------------------------------------
+// The whole air layer is one instanced pass (AirWingPass) fed from this method.
+// These are the producer-side half of the layout; the pass owns the rest.
+const AIR_WING_MARKER_RADIUS = 6.0;
+/** Mission-line shaft half-width, tiles. */
+const AIR_WING_LINE_HALF_WIDTH = 1.4;
+/** Radians between wing icons sharing one region. */
+const AIR_WING_SPREAD_ANGLE = 2.0944; // 120 degrees
+/** Tiles a region's extra wing icons are pushed out by. */
+const AIR_WING_REGION_SPREAD = 7.0;
+/** Device px per tile below which the air layer is dropped entirely. */
+const AIR_WING_CULL_ZOOM = 0.35;
+/** Below this tile delta an airbase and its target region are the same place. */
+const AIR_WING_LINE_MIN_LENGTH = 1.0;
 
 /**
  * Marker size for an army, normalized against its owner's troop ceiling.
@@ -275,6 +301,7 @@ export class WebGLFrameBuilder {
     this.syncLocalPlayer(gameView);
     this.syncSpawnOverlay(gameView);
     this.syncArmyMarkers(gameView);
+    this.syncAirWings(gameView);
     this.syncSmallPlayerGlow(gameView);
     this.syncTerrainDeltas(gameView);
     this.syncNukeImpacts(gameView);
@@ -557,6 +584,166 @@ export class WebGLFrameBuilder {
 
     this.view.updateArmyMarkers(markers);
     this.view.setArmyLabels(labels);
+  }
+
+  /**
+   * The air map layer (Prompt 7.8): region overlay, wing icons, mission lines.
+   *
+   * Built entirely from state the client already mirrors — region rectangles and
+   * the leader's share arrive in AirRegionUpdate, wings in AirWingUpdate — so
+   * this does no simulation. It is a projection: what the sim decided, drawn.
+   *
+   * Two decisions worth stating, because both are about not lying to the player:
+   *
+   *  - Only regions the sim reported are drawn. The client never re-derives the
+   *    grid, so the overlay shows the same regions the air war is actually
+   *    resolving rather than a plausible-looking second opinion.
+   *  - The data is pushed whether or not air mode is on; the pass decides
+   *    whether to draw. So toggling the overlay is instant and never needs a
+   *    resend, and turning it on does not depend on having predicted a toggle.
+   */
+  private syncAirWings(gameView: GameView): void {
+    const regions = gameView.airRegions();
+    const wings = gameView.airWings();
+    if (regions.length === 0 && wings.length === 0) {
+      this.view.updateAirWings({ regions: [], markers: [], lines: [] });
+      return;
+    }
+
+    const me = gameView.myPlayer();
+    const zoom = this.view.cameraZoom();
+    // Below the cull zoom the whole grid is sub-pixel; the army-marker precedent
+    // is to drop detail rather than shade a continent with hairline borders.
+    if (zoom < AIR_WING_CULL_ZOOM) {
+      this.view.updateAirWings({ regions: [], markers: [], lines: [] });
+      return;
+    }
+
+    const meID = me?.smallID() ?? -1;
+
+    const overlays: AirRegionOverlay[] = regions.map((r) => {
+      const leaderID = r.leaderSmallID();
+      const color = leaderID === null ? null : this.airWingColor(gameView, leaderID);
+      return {
+        regionId: r.regionId(),
+        x: r.x(),
+        y: r.y(),
+        width: r.width(),
+        height: r.height(),
+        sharePercent: r.sharePercent(),
+        color,
+        contested: r.contested(),
+      };
+    });
+
+    // Each owner's airbase, for mission-line origins. One Air Factory per owner
+    // is the normal case; if they have several, the lowest unit id wins, which
+    // is stable across clients for the same reason target selection is.
+    const airBases = new Map<number, { x: number; y: number }>();
+    const factories = gameView.units(UnitType.Factory);
+    for (const factory of factories) {
+      if (factory.state.factoryType !== FactoryType.Air) continue;
+      const ownerID = factory.state.ownerID;
+      if (airBases.has(ownerID)) continue;
+      airBases.set(ownerID, {
+        x: gameView.x(factory.state.pos) + 0.5,
+        y: gameView.y(factory.state.pos) + 0.5,
+      });
+    }
+
+    // Fan out wings sharing a region so two icons in one region are both
+    // readable. Only same-region wings collide, so this is a per-region index
+    // rather than a map-wide sweep.
+    const byRegion = new Map<number, number>();
+    const markers: AirWingMarker[] = [];
+    const lines: AirMissionLine[] = [];
+
+    for (const wing of wings) {
+      const regionID = wing.regionId();
+      if (regionID === null) continue;
+      const region = gameView.airRegion(regionID);
+      // An assigned wing whose region the sim did not report (it was wiped out
+      // this wave) has nowhere to fly: skip it rather than inventing a position.
+      if (region === undefined) continue;
+
+      const ownerID = wing.ownerSmallID();
+      const color = this.airWingColor(gameView, ownerID);
+      const isOwn = ownerID === meID;
+
+      // A wing at zero aircraft is drawn hollow and only when it is the local
+      // player's, since a rebuild in progress is their problem to see.
+      const count = wing.aircraftCount();
+      if (count === 0 && !isOwn) continue;
+
+      const index = byRegion.get(regionID) ?? 0;
+      byRegion.set(regionID, index + 1);
+
+      const flags = packAirWingFlags({
+        isOwn,
+        mission: wing.mission().type,
+        isDepleted:
+          count * 100 <= WING_START_AIRCRAFT * WING_MIN_EFFECTIVE_PERCENT,
+        isSelected: gameView.selectedAirWingId() === wing.id,
+      });
+
+      const spread = AIR_WING_REGION_SPREAD;
+      const angle = index * AIR_WING_SPREAD_ANGLE;
+      markers.push({
+        wingId: wing.id,
+        x: region.centerX() + Math.cos(angle) * spread,
+        y: region.centerY() + Math.sin(angle) * spread,
+        sizeTiles: AIR_WING_MARKER_RADIUS,
+        flags,
+        r: color.r,
+        g: color.g,
+        b: color.b,
+      });
+
+      // Mission line: from the wing's airbase to the region it flies in. Only
+      // drawn when the owner still has an Air Factory to launch from — without
+      // one the wing has no home on the map and a line to nowhere is worse than
+      // no line.
+      const base = airBases.get(ownerID);
+      if (count > 0 && base !== undefined) {
+        const toX = region.centerX();
+        const toY = region.centerY();
+        // Skip a degenerate line (base inside the region it flies) rather than
+        // pushing a zero-length segment through the shader.
+        if (
+          Math.abs(base.x - toX) > AIR_WING_LINE_MIN_LENGTH ||
+          Math.abs(base.y - toY) > AIR_WING_LINE_MIN_LENGTH
+        ) {
+          lines.push({
+            fromX: base.x,
+            fromY: base.y,
+            toX,
+            toY,
+            widthTiles: AIR_WING_LINE_HALF_WIDTH,
+            flags,
+            r: color.r,
+            g: color.g,
+            b: color.b,
+          });
+        }
+      }
+    }
+
+    this.view.updateAirWings({ regions: overlays, markers, lines });
+  }
+
+  /**
+   * An air overlay color from a player's territory color, so the air map and the
+   * ground map always agree on who a wing belongs to. Falls back to white for a
+   * player the client has not seen a color for yet.
+   */
+  private airWingColor(
+    gameView: GameView,
+    smallID: number,
+  ): { r: number; g: number; b: number } {
+    const owner = gameView.playerBySmallID(smallID);
+    if (!owner.isPlayer()) return { r: 1, g: 1, b: 1 };
+    const rgb = owner.territoryColor().toRgb();
+    return { r: rgb.r / 255, g: rgb.g / 255, b: rgb.b / 255 };
   }
 
   /**

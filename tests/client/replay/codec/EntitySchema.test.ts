@@ -63,6 +63,11 @@ const basePlayer: PlayerState = {
   outgoingAllianceRequests: [],
   alliances: [],
   outgoingEmojis: [],
+  matchLevel: 1,
+  matchXP: 0,
+  pendingPerks: [],
+  appliedPerks: [],
+  airCapacity: 0,
 };
 
 const playerAlternatives: { [K in keyof PlayerFields]: PlayerFields[K] } = {
@@ -115,6 +120,11 @@ const playerAlternatives: { [K in keyof PlayerFields]: PlayerFields[K] } = {
     { message: "🤝", senderID: 7, recipientID: "AllPlayers", createdAt: 55 },
     { message: "💀", senderID: 7, recipientID: 3, createdAt: 56 },
   ],
+  matchLevel: 4,
+  matchXP: 1_400,
+  pendingPerks: ["war-industry", "rapid-advance", "fortified-lines"],
+  appliedPerks: ["rapid-advance", "supply-lines"],
+  airCapacity: 14,
 };
 
 const baseUnit: UnitState = {

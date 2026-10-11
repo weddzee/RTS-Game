@@ -1,4 +1,5 @@
 import type { Army } from "../game/Army";
+import type { AirWing } from "../game/AirWing";
 import type { BattlePlan } from "../game/BattlePlan";
 import type {
   Attack,
@@ -57,6 +58,7 @@ export class SnapshotWriter {
   readonly units = new RefTable<Unit>();
   readonly armies = new RefTable<Army>();
   readonly battlePlans = new RefTable<BattlePlan>();
+  readonly airWings = new RefTable<AirWing>();
   readonly attacks = new RefTable<Attack>();
   readonly alliances = new RefTable<MutableAlliance>();
   readonly allianceRequests = new RefTable<object>();
@@ -101,6 +103,10 @@ export class SnapshotWriter {
 
   battlePlanOrNull(p: BattlePlan | null | undefined): number | null {
     return p ? this.battlePlans.ref(p) : null;
+  }
+
+  airWing(w: AirWing): number {
+    return this.airWings.ref(w);
   }
 
   attack(a: Attack): number {
@@ -152,6 +158,7 @@ export class SnapshotReader {
       units: Unit[];
       armies: Army[];
       battlePlans: BattlePlan[];
+      airWings: AirWing[];
       attacks: Attack[];
       alliances: MutableAlliance[];
       allianceRequests: object[];
@@ -219,6 +226,10 @@ export class SnapshotReader {
 
   battlePlanOrNull(i: number | null): BattlePlan | null {
     return i === null ? null : this.battlePlan(i);
+  }
+
+  airWing(i: number): AirWing {
+    return this.row(this.tables.airWings, i, "air wing");
   }
 
   attack(i: number): Attack {

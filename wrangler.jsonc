@@ -1,0 +1,18 @@
+{
+  "name": "openfront-mp",
+  "accountId": "b905162e3029edc9aa2186e9ae94e3ea",
+  "workersDevPreview": true,
+  
+  "compatibilityDurableObjects": [{
+    "name": "game-room",
+    "class": "CloudflareDurableObject"
+  }],
+  
+  "routes": {
+    "/api/rooms/*": "src/server/CloudflareRoutes.ts",
+    "/ws/*": "src/server/CloudflareRoutes.ts"
+  },
+  
+  "compatibilityDate": "2024-01-01",
+  "compatibilityFlags": ["durable-objects"]
+}

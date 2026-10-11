@@ -42,6 +42,8 @@ import type { FrameData, NameEntry } from "../render/types";
 import { STRUCTURE_TYPES } from "../render/types";
 import { TRAIL_TYPES } from "../render/types/UnitType";
 import { resolveTeamClanTag } from "../Utils";
+import { AirRegionView } from "./AirRegionView";
+import { AirWingView } from "./AirWingView";
 import { ArmyView } from "./ArmyView";
 import { BattlePlanView } from "./BattlePlanView";
 import { BATTLE_PLAN_PICK_RADIUS_TILES } from "../render/types/BattlePlan";
@@ -114,6 +116,17 @@ export class GameView implements GameMap {
   /** Plan under the pointer, and the one the panel is showing; may differ. */
   private _hoveredBattlePlanId: number | null = null;
   private _selectedBattlePlanId: number | null = null;
+
+  /**
+   * Air wings, by id (Prompt 7). Whole records on a fixed cadence, exactly like
+   * armies: wings are few, and both the panel and the map overlay need the
+   * complete record. A disbanded wing arrives once with `isActive: false`.
+   */
+  private _airWings = new Map<number, AirWingView>();
+  /** Air regions with aircraft in them, keyed by region id (Prompt 7.8). */
+  private _airRegions = new Map<number, AirRegionView>();
+  /** Wing the air panel is showing; null when none. */
+  private _selectedAirWingId: number | null = null;
 
   // â”€â”€ FrameData accumulators (renderer-bound state) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   private trailManager!: TrailManager;
@@ -269,6 +282,8 @@ export class GameView implements GameMap {
 
     this.applyArmyUpdates(gu);
     this.applyBattlePlanUpdates(gu);
+    this.applyAirWingUpdates(gu);
+    this.applyAirRegionUpdates(gu);
 
     this.updatedTiles = [];
     this.updatedTerrainTiles = [];
@@ -501,6 +516,49 @@ export class GameView implements GameMap {
         if (this._selectedArmyId === u.id) this._selectedArmyId = null;
       }
     }
+  }
+
+  /**
+   * Air wings, same add/replace/remove shape as armies (Prompt 7). A disbanded
+   * wing arrives once with `isActive: false` and is dropped here, so the panel's
+   * selection and the overlay's marker list both clear on the same update.
+   */
+  private applyAirWingUpdates(gu: GameUpdateViewData): void {
+    const updates = gu.updates[GameUpdateType.AirWing];
+    if (updates.length === 0) return;
+    for (const u of updates) {
+      const existing = this._airWings.get(u.id);
+      if (u.isActive) {
+        if (existing === undefined) {
+          const view = new AirWingView(u.id);
+          view.applyUpdate(u);
+          this._airWings.set(u.id, view);
+        } else {
+          existing.applyUpdate(u);
+        }
+      } else {
+        this._airWings.delete(u.id);
+        if (this._selectedAirWingId === u.id) this._selectedAirWingId = null;
+      }
+    }
+  }
+
+  /**
+   * Air regions (Prompt 7.8), the overlay's air picture.
+   *
+   * Replaces the whole set rather than merging: the air pass emits exactly the
+   * regions that currently have aircraft in them, so a region that just emptied
+   * is simply absent from the batch and disappears here. A merge would leave it
+   * on the map forever, which is worse than a momentary stale frame.
+   */
+  private applyAirRegionUpdates(gu: GameUpdateViewData): void {
+    const updates = gu.updates[GameUpdateType.AirRegion];
+    if (updates.length === 0) return;
+    const next = new Map<number, AirRegionView>();
+    for (const u of updates) {
+      next.set(u.regionId, new AirRegionView(u));
+    }
+    this._airRegions = next;
   }
 
   /**
@@ -1003,6 +1061,62 @@ export class GameView implements GameMap {
 
   armiesOf(ownerSmallID: number): ArmyView[] {
     return this.armies().filter((a) => a.ownerSmallID() === ownerSmallID);
+  }
+
+  // --- air wings (Prompt 7) ----------------------------------------------
+
+  /** Every air wing, in update order. */
+  airWings(): AirWingView[] {
+    return [...this._airWings.values()];
+  }
+
+  airWing(id: number): AirWingView | undefined {
+    return this._airWings.get(id);
+  }
+
+  /** The selected player's air wings only. */
+  myAirWings(): AirWingView[] {
+    const me = this.myPlayer();
+    if (me === null) return [];
+    return this.airWings().filter((w) => w.ownerSmallID() === me.smallID());
+  }
+
+  airWingsOf(ownerSmallID: number): AirWingView[] {
+    return this.airWings().filter((w) => w.ownerSmallID() === ownerSmallID);
+  }
+
+/** Wings stationed in one air region, unassigned wings excluded. */
+  airWingsInRegion(regionId: number): AirWingView[] {
+    return this.airWings().filter((w) => w.regionId() === regionId);
+  }
+
+  /**
+   * Air regions that currently have aircraft in them (Prompt 7.8).
+   *
+   * Not the whole grid: the grid is derived from the map and a client only ever
+   * receives the occupied regions. Drawn regions are exactly these, so the
+   * overlay scales with how much air is actually flying rather than with map
+   * size.
+   */
+  airRegions(): AirRegionView[] {
+    return [...this._airRegions.values()];
+  }
+
+  airRegion(regionId: number): AirRegionView | undefined {
+    return this._airRegions.get(regionId);
+  }
+
+  setSelectedAirWing(id: number | null): void {
+    this._selectedAirWingId = id;
+  }
+
+  selectedAirWing(): AirWingView | null {
+    if (this._selectedAirWingId === null) return null;
+    return this._airWings.get(this._selectedAirWingId) ?? null;
+  }
+
+  selectedAirWingId(): number | null {
+    return this._selectedAirWingId;
   }
 
   /**

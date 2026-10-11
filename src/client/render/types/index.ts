@@ -38,6 +38,22 @@ export {
 } from "./ArmyMarker";
 export type { ArmyMarker } from "./ArmyMarker";
 
+// Air wing overlay instances — the GL-free half of AirWingPass (Prompt 7.8).
+// Same split as the army marker: producers pack flag words here rather than
+// importing the pass and dragging its shaders in.
+export {
+  AIR_WING_FLAGS,
+  AIR_WING_FLOATS_PER_INSTANCE,
+  AIR_WING_KIND,
+  packAirWingFlags,
+} from "./AirWingMarker";
+export type {
+  AirMissionLine,
+  AirRegionOverlay,
+  AirWingKind,
+  AirWingMarker,
+} from "./AirWingMarker";
+
 // Frame events — per-frame ephemeral events (rendering FX)
 export type { BonusEvent, FrameEvents } from "./FrameEvents";
 

@@ -63,6 +63,12 @@ export interface RenderSettings {
     bar: boolean;
     nameDebug: boolean;
     armyMarker: boolean;
+    /**
+     * Air mode (Prompt 7.8). Off by default: the air-region grid is the biggest
+     * overlay in the game and must be something the player asks for, so the base
+     * map is never flooded with regions, wing icons and mission lines.
+     */
+    airWing: boolean;
   };
   terrain: {
     /**
@@ -449,6 +455,24 @@ moveIndicator: {
     stackSpread: number;
     /** Tiles the fan-out pushes the last army of a stack out by. */
     stackSpreadMax: number;
+  };
+  airWing: {
+    /** Peak opacity of a region's tint and border, 0-1. */
+    regionAlpha: number;
+    /** Peak opacity of a wing icon, 0-1. */
+    markerAlpha: number;
+    /** Peak opacity of a mission line, 0-1. */
+    lineAlpha: number;
+    /** Wing icon radius in tiles. */
+    markerRadiusTiles: number;
+    /** Mission line shaft half-width in tiles. */
+    lineHalfWidthTiles: number;
+    /**
+     * Device px per tile below which the whole air layer is skipped. The region
+     * grid is meaningful at every zoom, but wing icons and mission lines are
+     * not worth the overdraw on a continent-sized view.
+     */
+    cullZoom: number;
   };
   smallPlayerGlow: {
     color: number[]; // RGB, each 0â€“1

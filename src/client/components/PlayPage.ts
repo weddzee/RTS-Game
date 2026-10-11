@@ -1,6 +1,7 @@
 import { LitElement, html } from "lit";
 import { customElement } from "lit/decorators.js";
-import { assetUrl } from "../../core/AssetUrls";
+import "../PrivateLobbyMenu";
+import { translateText } from "../Utils";
 import "./CosmeticBackground";
 import "./NavAccountMenu";
 import "./NavUtilityIcons";
@@ -58,11 +59,14 @@ export class PlayPage extends LitElement {
             <div
               class="col-start-2 flex items-center justify-center text-malibu-blue min-w-0"
             >
-              <img
-                src=${assetUrl("images/OpenFrontLogo.svg")}
-                alt="OpenFront"
-                class="h-full w-auto"
-              />
+              <!-- PRIVATE_LOBBY_MODE: temporary product name as text. The
+                   proprietary OpenFront logo is not our branding (see
+                   docs/LICENSE_AUDIT.md) and is intentionally not used. -->
+              <span
+                class="text-xl font-bold tracking-wide text-white"
+                data-i18n="private_menu.product_name"
+                >${translateText("private_menu.product_name")}</span
+              >
             </div>
 
             <!-- Right slot: bell, help, settings and the profile control. The menu is
@@ -116,6 +120,12 @@ export class PlayPage extends LitElement {
             class="hidden lg:flex lg:h-full lg:flex-col w-full min-w-0"
           ></streaming-now>
         </div>
+
+        <!-- PRIVATE_LOBBY_MODE: the friends-and-classmates menu comes first.
+             The upstream game-mode selector below is retained for
+             compatibility (single-player, public join) but is no longer the
+             primary path. -->
+        <private-lobby-menu class="w-full"></private-lobby-menu>
 
         <game-mode-selector></game-mode-selector>
 

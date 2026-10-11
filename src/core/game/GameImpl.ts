@@ -2,6 +2,8 @@ import { z } from "zod";
 import { renderNumber } from "../../client/Utils";
 import { UnitView } from "../../client/view";
 import { ARMY_UPDATE_INTERVAL_TICKS } from "../configuration/ArmyBalance";
+import { AIR_WING_UPDATE_INTERVAL_TICKS } from "../configuration/AirBalance";
+import { BATTLE_PLAN_UPDATE_INTERVAL_TICKS } from "../configuration/BattlePlanBalance";
 import { Config } from "../configuration/Config";
 import {
   SharedWaterCache,
@@ -37,7 +39,9 @@ import { AllianceImpl } from "./AllianceImpl";
 import { AllianceRequestImpl } from "./AllianceRequestImpl";
 import type { Army, ArmyFront } from "./Army";
 import { ArmyImpl } from "./ArmyImpl";
-import { BATTLE_PLAN_UPDATE_INTERVAL_TICKS } from "../configuration/BattlePlanBalance";
+import { AirRegions } from "./AirRegion";
+import type { AirWing } from "./AirWing";
+import { AirWingImpl } from "./AirWingImpl";
 import type { BattlePlan } from "./BattlePlan";
 import { BattlePlanImpl } from "./BattlePlanImpl";
 import {
@@ -75,6 +79,7 @@ import { GameMap, TileRef } from "./GameMap";
 import { GameUpdate, GameUpdateType } from "./GameUpdates";
 import { MotionPlanRecord, packMotionPlans } from "./MotionPlans";
 import { PlayerImpl } from "./PlayerImpl";
+import { XP_FOR_ELIMINATION } from "./Progression";
 import { RailNetwork } from "./RailNetwork";
 import {
   createRailNetwork,
@@ -141,6 +146,22 @@ export class GameImpl implements Game {
   private _battlePlanMap = new Map<number, BattlePlanImpl>();
   private _battlePlans: BattlePlanImpl[] = [];
 
+  /**
+   * Air wings (Prompt 7.2): by id, plus the creation-order list the views and
+   * the air-superiority pass iterate. Same two-collection shape as armies,
+   * because a wing has exactly the same relationship to its owner that an army
+   * does: a named entity the player raises, assigns and watches lose aircraft.
+   */
+  private _airWingMap = new Map<number, AirWingImpl>();
+  private _airWings: AirWingImpl[] = [];
+
+  /**
+   * The map's air-region partition (Prompt 7.4). Built once from the map
+   * dimensions, so it is identical on every client by construction and needs no
+   * snapshot — the layout is a pure function of data every client already has.
+   */
+  private _airRegions: AirRegions;
+
   private nextPlayerID = 1;
   private _nextUnitID = 1;
   /** Monotonic army/front id allocator. See nextArmyID/nextFrontID. */
@@ -148,6 +169,8 @@ export class GameImpl implements Game {
   private _nextFrontID = 1;
   /** Monotonic battle plan id allocator. See nextBattlePlanID. */
   private _nextBattlePlanID = 1;
+  /** Monotonic air wing id allocator. See nextAirWingID. */
+  private _nextAirWingID = 1;
 
   private updates: GameUpdates = createGameUpdatesMap();
   private tileUpdatePairs: number[] = [];
@@ -198,6 +221,7 @@ export class GameImpl implements Game {
     this._width = _map.width();
     this._height = _map.height();
     this.unitGrid = new UnitGrid(this._map);
+    this._airRegions = new AirRegions(this._map);
     this._waterManager = new WaterManager(
       this._map,
       this.miniGameMap,
@@ -350,6 +374,53 @@ export class GameImpl implements Game {
     if (front.armyIDs.length === 0) {
       this._fronts = this._fronts.filter((f) => f !== front);
     }
+  }
+
+  // --- air wings (Prompt 7.2, 7.4) ---------------------------------------
+
+  /** The map's air-region partition. See AirRegions. */
+  airRegions(): AirRegions {
+    return this._airRegions;
+  }
+
+  nextAirWingID(): number {
+    const old = this._nextAirWingID;
+    this._nextAirWingID++;
+    return old;
+  }
+
+  /** Every active air wing, in creation order. */
+  airWings(): AirWing[] {
+    return this._airWings;
+  }
+
+  airWingsOf(player: Player | PlayerID): AirWing[] {
+    const owner =
+      typeof player === "string" ? this._players.get(player) : player;
+    if (owner === undefined) return [];
+    const smallID = owner.smallID();
+    return this._airWings.filter((w) => w.owner().smallID() === smallID);
+  }
+
+  airWing(id: number): AirWing | undefined {
+    return this._airWingMap.get(id);
+  }
+
+  /** Wings flying in one air region, assigned or not. Used by the air pass. */
+  airWingsInRegion(regionId: number): AirWing[] {
+    return this._airWings.filter((w) => w.assignedRegionId() === regionId);
+  }
+
+  addAirWing(wing: AirWing): void {
+    const impl = wing as AirWingImpl;
+    this._airWingMap.set(wing.id(), impl);
+    this._airWings.push(impl);
+  }
+
+  removeAirWing(wing: AirWing): void {
+    this._airWingMap.delete(wing.id());
+    const i = this._airWings.indexOf(wing as AirWingImpl);
+    if (i !== -1) this._airWings.splice(i, 1);
   }
 
   // --- battle plans -------------------------------------------------------
@@ -735,6 +806,17 @@ export class GameImpl implements Game {
         this.addUpdate(plan.toUpdate());
       }
     }
+    // Air wings (Prompt 7.8) ride the same cadence and for the same reason: the
+    // panel and the map overlay both need the complete record, and a wing that
+    // lost aircraft should reach every client within a couple of ticks.
+    if (
+      this._airWings.length > 0 &&
+      this.ticks() % AIR_WING_UPDATE_INTERVAL_TICKS === 0
+    ) {
+      for (const wing of this._airWings) {
+        this.addUpdate(wing.toUpdate());
+      }
+    }
     // Flush pending water conversions + throttled graph rebuild
     const waterChangedTiles = this._waterManager.tick(this._ticks);
     for (const tile of waterChangedTiles) {
@@ -829,6 +911,9 @@ export class GameImpl implements Game {
     }
     for (const plan of this._battlePlans) {
       hash += plan.hash();
+    }
+    for (const wing of this._airWings) {
+      hash += wing.hash();
     }
     return hash;
   }
@@ -1617,6 +1702,7 @@ export class GameImpl implements Game {
       nextArmyID: this._nextArmyID,
       nextFrontID: this._nextFrontID,
       nextBattlePlanID: this._nextBattlePlanID,
+      nextAirWingID: this._nextAirWingID,
       nextAllianceID: this.nextAllianceID,
       units: [...this._unitMap.values()].map((u) => w.unit(u)),
       armies: this._armies.map((a) => w.army(a)),
@@ -1635,6 +1721,7 @@ export class GameImpl implements Game {
       territoryVersion: this._territoryVersion,
       fronts: this._fronts.map((f) => ({ ...f, armyIDs: [...f.armyIDs] })),
       battlePlans: this._battlePlans.map((p) => w.battlePlan(p)),
+      airWings: this._airWings.map((wing) => w.airWing(wing)),
       shipStaggers: { ...this.shipStaggers },
       nationMirvTargets: [...this._nationMirvTargets],
       mirvsLaunched: this._mirvsLaunched,
@@ -1684,6 +1771,13 @@ export class GameImpl implements Game {
     this._battlePlans = restored;
   }
 
+  /** Air wings restore in table order, for exactly the armies' reason. */
+  private restoreAirWings(ids: number[], r: SnapshotReader): void {
+    const restored = ids.map((i) => r.airWing(i) as AirWingImpl);
+    this._airWingMap = new Map(restored.map((w) => [w.id(), w]));
+    this._airWings = restored;
+  }
+
   restoreState(s: GameState, r: SnapshotReader): void {
     this._ticks = s.ticks;
     this.startTick = s.startTick;
@@ -1712,6 +1806,8 @@ export class GameImpl implements Game {
     }));
     this._nextBattlePlanID = s.nextBattlePlanID;
     this.restoreBattlePlans(s.battlePlans, r);
+    this._nextAirWingID = s.nextAirWingID;
+    this.restoreAirWings(s.airWings, r);
     this.playerTeams = [...s.playerTeams];
     this.botTeam = s.botTeam;
     this._isPaused = s.isPaused;
@@ -1810,6 +1906,10 @@ export class GameImpl implements Game {
     // count. PlayerExecution keeps the same stamp as a fallback for non-conquest
     // deaths; recordDeathPosition is first-write-wins, so this value sticks.
     this.stats().recordKilledBy(conquered, conqueror.clientID());
+    // Match XP (Prompt 6, 6.1): eliminating a player is the game's clearest
+    // major objective, so it pays the largest single award outside a full
+    // conquest of a city. Credited to the conqueror — never to the loser.
+    conqueror.addMatchXP(XP_FOR_ELIMINATION);
     this.stats().recordDeathPosition(
       conquered,
       this.players().filter(
@@ -1828,7 +1928,7 @@ export class GameImpl implements Game {
 
 export const GameSnapshot = snapshotType({
   name: "Game",
-  version: 3,
+  version: 4,
   schema: z.object({
     ticks: zInt(),
     startTick: zInt().nullable(),
@@ -1843,6 +1943,7 @@ export const GameSnapshot = snapshotType({
     nextArmyID: zInt(),
     nextFrontID: zInt(),
     nextBattlePlanID: zInt(),
+    nextAirWingID: zInt(),
     nextAllianceID: zInt(),
     units: z.array(zRef()),
     armies: z.array(zRef()),
@@ -1868,6 +1969,7 @@ export const GameSnapshot = snapshotType({
       }),
     ),
     battlePlans: z.array(zRef()),
+    airWings: z.array(zRef()),
     shipStaggers: z.object({ tradeShip: zInt(), transportShip: zInt() }),
     nationMirvTargets: z.array(z.tuple([z.string(), zInt()])),
     mirvsLaunched: zInt(),
@@ -1894,6 +1996,13 @@ export const GameSnapshot = snapshotType({
       ...d,
       nextBattlePlanID: 1,
       battlePlans: [],
+    }),
+    // v3 predates air wings. Same reasoning: no wings, but the allocator starts
+    // at 1 so the first wing raised does not reuse an id an older record had.
+    3: (d: Record<string, unknown>) => ({
+      ...d,
+      nextAirWingID: 1,
+      airWings: [],
     }),
   },
 });

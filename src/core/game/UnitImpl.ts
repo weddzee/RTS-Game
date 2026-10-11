@@ -16,6 +16,13 @@ import {
 } from "../snapshot/SnapshotType";
 import { simpleHash, toInt, withinInt } from "../Util";
 import {
+  FACTORY_EFFICIENCY_FULL,
+  FactoryType,
+  applyFactoryDamage,
+  captureEfficiencyFor,
+  isFactoryType,
+} from "./Factory";
+import {
   AllUnitParams,
   MessageType,
   NukeState,
@@ -64,6 +71,11 @@ export class UnitImpl implements Unit {
   // Nuke only
   private _deletionAt: number | null = null;
   private _samLauncherState: SamLauncherState | undefined;
+  // Factories (Prompt 5): specialization + damage model. Only meaningful
+  // when _type === UnitType.Factory; other units leave defaults untouched.
+  private _factoryType: FactoryType = FactoryType.Civilian;
+  private _factoryEfficiency: number = FACTORY_EFFICIENCY_FULL;
+  private _factoryDisabledTicks: number = 0;
 
   constructor(
     private _type: UnitType,
@@ -116,6 +128,24 @@ export class UnitImpl implements Unit {
     this._loaded =
       "loaded" in params ? (params.loaded ?? undefined) : undefined;
     this._trainType = "trainType" in params ? params.trainType : undefined;
+    if (this._type === UnitType.Factory) {
+      const requested =
+        "factoryType" in params
+          ? (params as { factoryType?: unknown }).factoryType
+          : undefined;
+      this._factoryType =
+        isFactoryType(requested) &&
+        (requested === FactoryType.Civilian ||
+          requested === FactoryType.Military ||
+          requested === FactoryType.Air ||
+          requested === FactoryType.Research ||
+          requested === FactoryType.SupplyHub ||
+          requested === FactoryType.MissileFacility)
+          ? requested
+          : FactoryType.Civilian;
+      this._factoryEfficiency = FACTORY_EFFICIENCY_FULL;
+      this._factoryDisabledTicks = 0;
+    }
 
     switch (this._type) {
       case UnitType.Warship:
@@ -195,6 +225,16 @@ export class UnitImpl implements Unit {
       hasTrainStation: this._hasTrainStation,
       trainType: this._trainType,
       loaded: this._loaded,
+      // Compact factory representation for the selected-panel + map icons
+      // (5.5). Only set for factories so every other unit stays byte-identical.
+      factoryType:
+        this._type === UnitType.Factory ? this._factoryType : undefined,
+      factoryEfficiency:
+        this._type === UnitType.Factory ? this._factoryEfficiency : undefined,
+      factoryDisabled:
+        this._type === UnitType.Factory && this._factoryDisabledTicks > 0
+          ? true
+          : undefined,
     };
     return update;
   }
@@ -246,6 +286,7 @@ export class UnitImpl implements Unit {
 
   setOwner(newOwner: PlayerImpl): void {
     this.clearPendingDeletion();
+    const wasFactory = this._type === UnitType.Factory;
     switch (this._type) {
       case UnitType.Warship:
       case UnitType.Port:
@@ -275,6 +316,12 @@ export class UnitImpl implements Unit {
     this._owner._units.push(this);
     this._owner._myUnitsVersion++;
     this.mg.bumpUnitsVersion();
+    if (wasFactory) {
+      // Captured factories come out damaged, never at full output (5.4).
+      // Deterministic 30-60% efficiency; FactoryExecution repairs gradually.
+      this._factoryEfficiency = captureEfficiencyFor(this._id);
+      this._factoryDisabledTicks = 0;
+    }
     this.mg.addUpdate(this.toUpdate());
   }
 
@@ -778,6 +825,90 @@ export class UnitImpl implements Unit {
     return this._trainType;
   }
 
+  // --- Factories (Prompt 5) ----------------------------------------------
+
+  private assertFactory(): void {
+    if (this._type !== UnitType.Factory) {
+      throw new Error("factory method called on non-factory unit");
+    }
+  }
+
+  factoryType(): FactoryType {
+    this.assertFactory();
+    return this._factoryType;
+  }
+
+  factoryEfficiency(): number {
+    this.assertFactory();
+    return this._factoryEfficiency;
+  }
+
+  setFactoryEfficiency(efficiencyPercent: number): void {
+    this.assertFactory();
+    const next =
+      efficiencyPercent < 0
+        ? 0
+        : efficiencyPercent > FACTORY_EFFICIENCY_FULL
+          ? FACTORY_EFFICIENCY_FULL
+          : Math.floor(efficiencyPercent);
+    if (next !== this._factoryEfficiency) {
+      this._factoryEfficiency = next;
+      this.mg.addUpdate(this.toUpdate());
+    }
+  }
+
+  factoryDisabledTicks(): number {
+    this.assertFactory();
+    return this._factoryDisabledTicks;
+  }
+
+  setFactoryDisabledTicks(ticks: number): void {
+    this.assertFactory();
+    const next = Math.max(0, Math.floor(ticks));
+    if (next !== this._factoryDisabledTicks) {
+      this._factoryDisabledTicks = next;
+      this.mg.addUpdate(this.toUpdate());
+    }
+  }
+
+  tickFactoryDisabled(): void {
+    if (this._type !== UnitType.Factory) return;
+    if (this._factoryDisabledTicks > 0) {
+      this._factoryDisabledTicks--;
+      this.mg.addUpdate(this.toUpdate());
+    }
+  }
+
+  repairFactoryTick(): void {
+    if (this._type !== UnitType.Factory) return;
+    if (this._factoryEfficiency < FACTORY_EFFICIENCY_FULL) {
+      this._factoryEfficiency++;
+      this.mg.addUpdate(this.toUpdate());
+    }
+  }
+
+  damageFactory(damagePercent: number, _attacker?: Player): void {
+    this.assertFactory();
+    this.setFactoryEfficiency(
+      applyFactoryDamage(this._factoryEfficiency, Math.floor(damagePercent)),
+    );
+  }
+
+  disableFactory(ticks: number): void {
+    this.assertFactory();
+    this.setFactoryDisabledTicks(ticks);
+  }
+
+  isFactoryOperational(): boolean {
+    if (this._type !== UnitType.Factory) return false;
+    return (
+      this._active &&
+      !this._underConstruction &&
+      this._factoryDisabledTicks <= 0 &&
+      this._factoryEfficiency >= FACTORY_EFFICIENCY_FULL
+    );
+  }
+
   isLoaded(): boolean | undefined {
     return this._loaded;
   }
@@ -856,6 +987,11 @@ export class UnitImpl implements Unit {
             duration: this._samLauncherState.duration,
           }
         : null,
+      factoryType: this._type === UnitType.Factory ? this._factoryType : null,
+      factoryEfficiency:
+        this._type === UnitType.Factory ? this._factoryEfficiency : null,
+      factoryDisabledTicks:
+        this._type === UnitType.Factory ? this._factoryDisabledTicks : null,
     };
   }
 
@@ -906,12 +1042,31 @@ export class UnitImpl implements Unit {
     this._samLauncherState = s.samLauncherState
       ? { ...s.samLauncherState }
       : undefined;
+    // Factories (Prompt 5, v2 fields). Older snapshots lack them — default to
+    // a pristine civilian factory so legacy saves keep working.
+    if (this._type === UnitType.Factory) {
+      const ft = (s as { factoryType?: unknown }).factoryType;
+      this._factoryType = isFactoryType(ft) ? ft : FactoryType.Civilian;
+      const eff = (s as { factoryEfficiency?: unknown }).factoryEfficiency;
+      this._factoryEfficiency =
+        typeof eff === "number"
+          ? Math.max(0, Math.min(FACTORY_EFFICIENCY_FULL, Math.floor(eff)))
+          : FACTORY_EFFICIENCY_FULL;
+      const dis = (s as { factoryDisabledTicks?: unknown })
+        .factoryDisabledTicks;
+      this._factoryDisabledTicks =
+        typeof dis === "number" ? Math.max(0, Math.floor(dis)) : 0;
+    } else {
+      this._factoryType = FactoryType.Civilian;
+      this._factoryEfficiency = FACTORY_EFFICIENCY_FULL;
+      this._factoryDisabledTicks = 0;
+    }
   }
 }
 
 export const UnitSnapshot = snapshotType({
   name: "Unit",
-  version: 1,
+  version: 2,
   schema: z.object({
     id: zInt(),
     type: UnitTypeSchema,
@@ -968,6 +1123,19 @@ export const UnitSnapshot = snapshotType({
         duration: zInt(),
       })
       .nullable(),
+    // Factories (Prompt 5, v2). Nullable so v1 records migrate cleanly;
+    // non-factory units store null.
+    factoryType: z.enum(FactoryType).nullable(),
+    factoryEfficiency: zInt().nullable(),
+    factoryDisabledTicks: zInt().nullable(),
   }),
+  migrations: {
+    1: (d: any) => ({
+      ...d,
+      factoryType: null,
+      factoryEfficiency: null,
+      factoryDisabledTicks: null,
+    }),
+  },
 });
 export type UnitState = z.infer<typeof UnitSnapshot.schema>;

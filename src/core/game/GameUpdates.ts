@@ -5,9 +5,15 @@ import type {
   ArmyOrder,
   ArmyStatistics,
 } from "./Army";
-import type { BattlePlanOrder, BattlePlanStatus } from "./BattlePlan";
 import type { ArmyComposition, ArmySupplyStatus } from "./ArmyComposition";
 import type { ArmyVeterancyTier } from "./ArmyVeterancy";
+import type { BattlePlanOrder, BattlePlanStatus } from "./BattlePlan";
+import type {
+  AircraftType,
+  AirMission,
+  AirWingStatistics,
+} from "./Aircraft";
+import type { FactoryType } from "./Factory";
 import {
   EmojiMessage,
   GameUpdates,
@@ -117,6 +123,8 @@ export enum GameUpdateType {
   DonateEvent,
   Army,
   BattlePlan,
+  AirWing,
+  AirRegion,
 }
 
 export type GameUpdate =
@@ -144,7 +152,77 @@ export type GameUpdate =
   | GamePausedUpdate
   | DonateEventUpdate
   | ArmyUpdate
-  | BattlePlanUpdate;
+  | BattlePlanUpdate
+  | AirWingUpdate
+  | AirRegionUpdate;
+
+/**
+ * One air wing's full state, worker -> main thread.
+ *
+ * Whole-record like ArmyUpdate and for the same reasons: wings are few, they
+ * change on a slow cadence, and both the panel and the map overlay need the
+ * complete record to render without a local merge step.
+ *
+ * Note what is NOT here: no position, no heading, no per-aircraft list. A wing
+ * has a region and a mission, and that is the whole of its authoritative
+ * geometry — see game/Aircraft.ts.
+ */
+export interface AirWingUpdate {
+  type: GameUpdateType.AirWing;
+  /** Game-wide wing id. Stable for the wing's lifetime. */
+  id: number;
+  /** Owner's small id. Drives the marker color and friend/enemy filtering. */
+  ownerID: number;
+  name: string;
+  aircraftType: AircraftType;
+  /** Live aircraft count. The wing's entire physical presence. */
+  aircraftCount: number;
+  /** Cumulative aircraft this wing has lost. */
+  losses: number;
+  experience: number;
+  /** 0..100, derived; see wingEffectiveness. */
+  effectiveness: number;
+  /** Air region the wing is assigned to, or null while unassigned. */
+  regionId: number | null;
+  mission: AirMission;
+  createdAt: Tick;
+  statistics: AirWingStatistics;
+  isActive: boolean;
+}
+
+/**
+ * One air region's air picture, worker -> main thread (Prompt 7.8).
+ *
+ * The region GRID is derived from the map, not stored, so a client cannot
+ * reconstruct it — these updates are how a client learns where the regions are
+ * and who holds each one's sky. Emitted only for regions that actually have
+ * aircraft in them: an overlay over every region of a large map is both a waste
+ * of bandwidth and exactly the "flooding" 7.8 forbids.
+ *
+ * A region that empties simply stops being sent. Each air pass therefore
+ * REPLACES the client's region set wholesale rather than merging into it, so a
+ * region that just emptied disappears instead of lingering — see GameView.
+ */
+export interface AirRegionUpdate {
+  type: GameUpdateType.AirRegion;
+  /** Region id, matching `Game.airRegions()` and `AirWingUpdate.regionId`. */
+  regionId: number;
+  /** Region origin, in tiles. */
+  x: number;
+  y: number;
+  /** Region size, in tiles. */
+  width: number;
+  height: number;
+  /**
+   * Share of this region's air war held by the leading side, 0..100. Exactly 50
+   * with no leading side means nobody is flying here.
+   */
+  sharePercent: number;
+  /** Leading side's small id, or null when nobody is flying in the region. */
+  leaderSmallID: number | null;
+  /** True when aircraft from more than one side are in the region. */
+  contested: boolean;
+}
 
 /**
  * One army's full state, worker -> main thread.
@@ -285,6 +363,11 @@ export interface UnitUpdate {
   trainType?: TrainType; // Only for trains
   loaded?: boolean; // Only for trains
   samUpgrade?: SamLauncherState;
+  // Factories (Prompt 5): compact map + selected-panel representation.
+  // Only set for Factory units; omitted otherwise so other units are unchanged.
+  factoryType?: FactoryType;
+  factoryEfficiency?: number;
+  factoryDisabled?: boolean;
 }
 
 export interface AttackUpdate {
@@ -352,6 +435,22 @@ export interface PlayerUpdate {
   betrayals?: number;
   lastDeleteUnitTick?: Tick;
   isLobbyCreator?: boolean;
+  // Match progression (Prompt 6). Sent for every player, not just the local
+  // one — level and applied perks are shown on other players' panels, and the
+  // XP bar is cheap to diff (it changes a few times per match at most).
+  /** Current match level, 1-7. */
+  matchLevel?: number;
+  /** Cumulative match XP, already pacing-scaled at award time. */
+  matchXP?: number;
+  /** Level-up perk options awaiting a pick; empty when nothing is pending. */
+  pendingPerks?: string[];
+  /** Applied perk IDs, in pick order. */
+  appliedPerks?: string[];
+  /**
+   * Banked aircraft production (Prompt 7.3), in whole aircraft. Drives the
+   * air panel's "ready" readout and gates whether a wing can be raised.
+   */
+  airCapacity?: number;
 }
 
 export interface AllianceView {

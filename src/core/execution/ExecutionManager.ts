@@ -10,10 +10,14 @@ import { ArmyOrderExecution } from "./army/ArmyOrderExecution";
 import { CreateArmyExecution } from "./army/CreateArmyExecution";
 import { RenameArmyExecution } from "./army/RenameArmyExecution";
 import { SetArmyCompositionExecution } from "./army/SetArmyCompositionExecution";
+import { AttackExecution } from "./AttackExecution";
+import { AirWingOrderExecution } from "./air/AirWingOrderExecution";
+import { CreateAirWingExecution } from "./air/CreateAirWingExecution";
+import { RenameAirWingExecution } from "./air/RenameAirWingExecution";
 import { CreateBattlePlanExecution } from "./battleplan/CreateBattlePlanExecution";
 import { EditBattlePlanExecution } from "./battleplan/EditBattlePlanExecution";
-import { AttackExecution } from "./AttackExecution";
 import { BoatRetreatExecution } from "./BoatRetreatExecution";
+import { ChoosePerkExecution } from "./ChoosePerkExecution";
 import { ConstructionExecution } from "./ConstructionExecution";
 import { DeleteUnitExecution } from "./DeleteUnitExecution";
 import { DonateGoldExecution } from "./DonateGoldExecution";
@@ -121,6 +125,7 @@ export class Executor {
           intent.tile,
           intent.rocketDirectionUp,
           intent.amount,
+          intent.factoryType,
         );
       case "allianceExtension": {
         return new AllianceExtensionExecution(player, intent.recipient);
@@ -165,6 +170,24 @@ export class Executor {
         return new ArmyOrderExecution(player, intent.armyId, intent.order);
       case "battle_plan":
         return this.createBattlePlan(player, intent.action);
+      case "choose_perk":
+        return new ChoosePerkExecution(player, intent.perkId);
+      case "create_air_wing":
+        return new CreateAirWingExecution(
+          player,
+          intent.aircraftType,
+          intent.name,
+          intent.regionId,
+        );
+      case "rename_air_wing":
+        return new RenameAirWingExecution(player, intent.wingId, intent.name);
+      case "air_wing_order":
+        return new AirWingOrderExecution(
+          player,
+          intent.wingId,
+          intent.regionId,
+          intent.mission,
+        );
       default:
         throw new Error(`intent type ${intent} not found`);
     }
